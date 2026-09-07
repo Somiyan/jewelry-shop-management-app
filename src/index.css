@@ -1,0 +1,234 @@
+@import "tailwindcss";
+
+/*
+  Jewellery ERP — design tokens.
+  Direction: "the assay ledger". The merchandise is gold; the instrument is cool
+  and quiet so the gold *figures* carry the visual weight. Gold/silver appear
+  only as semantic metal indicators — never as UI chrome.
+
+  Rules that keep this from drifting into generic-admin-template:
+  - Cards are separated by hairlines, not by a drop shadow under every box.
+    Shadow is reserved for things that genuinely float (popover, modal, drawer).
+  - Radius varies by element role. Do not put one radius on everything.
+  - Numeric values use tabular figures and are right-aligned in tables.
+*/
+
+@theme {
+  /* ---- Surfaces & ink -------------------------------------------------- */
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-sunken: #eef1f5;
+  --color-ink: #101826;
+  --color-ink-muted: #5b6878;
+  --color-line: #e2e7ec;
+
+  /* ---- Accent: deep peacock teal --------------------------------------- */
+  --color-accent: #0a6b63;
+  --color-accent-hover: #08574f;
+  --color-accent-soft: #e4f1ef;
+  --color-accent-ink: #ffffff;
+
+  /* ---- Semantic status -------------------------------------------------- */
+  --color-success: #0f7a3d;
+  --color-success-soft: #e6f4ec;
+  --color-warning: #a8630a;
+  --color-warning-soft: #fdf0dd;
+  --color-danger: #b3261e;
+  --color-danger-soft: #fceceb;
+  --color-info: #1b5fa8;
+  --color-info-soft: #e8f1fa;
+
+  /* ---- Metal semantics (merchandise, not chrome) ------------------------ */
+  --color-gold: #c9a227;
+  --color-silver: #9aa5ad;
+
+  /* ---- Type ------------------------------------------------------------- */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ---- Radius: by role, deliberately not uniform ------------------------ */
+  --radius-control: 6px;   /* buttons, inputs, selects   */
+  --radius-panel: 10px;    /* cards, tables, panels      */
+  --radius-overlay: 14px;  /* modals, drawers, sheets    */
+  --radius-pill: 999px;    /* badges, toggles            */
+
+  /* ---- Elevation: only for things that truly float ---------------------- */
+  --shadow-raise: 0 4px 12px -2px rgb(16 24 38 / 0.10), 0 2px 4px -2px rgb(16 24 38 / 0.06);
+  --shadow-overlay: 0 24px 48px -12px rgb(16 24 38 / 0.24);
+
+  /* ---- Layout ----------------------------------------------------------- */
+  --spacing-rail: 64px;
+  --spacing-sidebar: 244px;
+  --spacing-header: 56px;
+  --spacing-bottomnav: 60px;
+  --container-content: 1560px;
+}
+
+/* Dark theme by token override — components must never carry `dark:` variants.
+   Follows the OS unless an explicit [data-theme] is set. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-canvas: #0b1017;
+    --color-surface: #141b24;
+    --color-sunken: #1b232e;
+    --color-ink: #eef2f6;
+    --color-ink-muted: #93a1b0;
+    --color-line: #26303c;
+
+    --color-accent: #2fa294;
+    --color-accent-hover: #3cb8a8;
+    --color-accent-soft: #10322f;
+    --color-accent-ink: #05201d;
+
+    --color-success: #45b26b;
+    --color-success-soft: #102a1b;
+    --color-warning: #d99424;
+    --color-warning-soft: #2e2110;
+    --color-danger: #e8695f;
+    --color-danger-soft: #331614;
+    --color-info: #5aa1e6;
+    --color-info-soft: #12232f;
+
+    --shadow-overlay: 0 24px 48px -12px rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-canvas: #0b1017;
+  --color-surface: #141b24;
+  --color-sunken: #1b232e;
+  --color-ink: #eef2f6;
+  --color-ink-muted: #93a1b0;
+  --color-line: #26303c;
+
+  --color-accent: #2fa294;
+  --color-accent-hover: #3cb8a8;
+  --color-accent-soft: #10322f;
+  --color-accent-ink: #05201d;
+
+  --color-success: #45b26b;
+  --color-success-soft: #102a1b;
+  --color-warning: #d99424;
+  --color-warning-soft: #2e2110;
+  --color-danger: #e8695f;
+  --color-danger-soft: #331614;
+  --color-info: #5aa1e6;
+  --color-info-soft: #12232f;
+
+  --shadow-overlay: 0 24px 48px -12px rgb(0 0 0 / 0.6);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Money, weights and quantities align on the decimal. Applied via .figures
+     or any mono text — this is what makes the tables read as a ledger. */
+  .figures,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* One visible focus treatment for the whole app. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Inputs inherit the app type rather than the browser's. */
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Never let a page scroll sideways on a phone. */
+  body,
+  #root {
+    overflow-x: clip;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- Motion: state changes only (overlay open, toast in). Kept under 180ms.
+   Defined as @utility so variants like `sm:anim-slide-in-right` work.
+   `prefers-reduced-motion` is neutralised globally above. -------------------- */
+@keyframes anim-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes anim-panel-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes anim-sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
+@keyframes anim-slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+
+@keyframes anim-slide-in-left {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+
+@keyframes anim-toast-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@utility anim-fade-in {
+  animation: anim-fade-in 140ms ease-out;
+}
+
+@utility anim-panel-in {
+  animation: anim-panel-in 160ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@utility anim-sheet-in {
+  animation: anim-sheet-in 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@utility anim-slide-in-right {
+  animation: anim-slide-in-right 170ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@utility anim-slide-in-left {
+  animation: anim-slide-in-left 170ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@utility anim-toast-in {
+  animation: anim-toast-in 150ms ease-out;
+}
