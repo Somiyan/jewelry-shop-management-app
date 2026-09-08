@@ -9,6 +9,11 @@ export interface MenuProps {
   /** Panel contents. Call `close` after an item is chosen. */
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'
+  /**
+   * `menu` for a list of actions, `dialog` for a small details panel (the rate
+   * popover). Only the ARIA semantics differ — the panel treatment is shared.
+   */
+  kind?: 'menu' | 'dialog'
   triggerClassName?: string
   panelClassName?: string
 }
@@ -23,6 +28,7 @@ export function Menu({
   trigger,
   children,
   align = 'right',
+  kind = 'menu',
   triggerClassName,
   panelClassName,
 }: MenuProps) {
@@ -50,7 +56,7 @@ export function Menu({
       <button
         type="button"
         aria-label={label}
-        aria-haspopup="menu"
+        aria-haspopup={kind}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         className={cx(
@@ -62,7 +68,8 @@ export function Menu({
       </button>
       {open && (
         <div
-          role="menu"
+          role={kind}
+          aria-label={kind === 'dialog' ? label : undefined}
           className={cx(
             'anim-fade-in absolute top-[calc(100%+6px)] z-40 min-w-52 rounded-panel border border-line bg-surface p-1 shadow-raise',
             align === 'right' ? 'right-0' : 'left-0',
