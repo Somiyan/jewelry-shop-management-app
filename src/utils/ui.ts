@@ -1,12 +1,5 @@
+import type { RateSourceType, RateStatusLabel } from '../api/rates'
 import type { BadgeTone } from '../components/Badge'
-
-/**
- * Legacy raw class strings. Phase 2 replaces every call site with the
- * `<Input>` / `<Field>` components — do not use these in new code.
- */
-export const inputClass =
-  'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/30 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
-export const labelClass = 'mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300'
 
 export type { BadgeTone }
 
@@ -107,4 +100,45 @@ export function stockLevelLabel(level: StockLevel): string {
     default:
       return 'In stock'
   }
+}
+
+/**
+ * Tone for a rate's derived status label. STALE is a warning, not an error:
+ * the rate still works, it is just old enough that the shop should re-check it.
+ */
+export function rateStatusTone(label: RateStatusLabel): BadgeTone {
+  switch (label) {
+    case 'LIVE':
+      return 'success'
+    case 'MANUAL':
+      return 'info'
+    case 'STALE':
+      return 'warning'
+    case 'NONE':
+    default:
+      return 'neutral'
+  }
+}
+
+/**
+ * Badge text for a rate status. Sentence case per DESIGN.md; the point is that
+ * the status is spelled out at all, so colour is never carrying it alone.
+ */
+export function rateStatusLabelText(label: RateStatusLabel): string {
+  switch (label) {
+    case 'LIVE':
+      return 'Live'
+    case 'MANUAL':
+      return 'Manual'
+    case 'STALE':
+      return 'Stale'
+    case 'NONE':
+    default:
+      return 'Not set'
+  }
+}
+
+/** How a rate got into the ledger. */
+export function rateSourceLabel(sourceType: RateSourceType | undefined): string {
+  return sourceType === 'LIVE_API' ? 'Live API' : 'Manual'
 }

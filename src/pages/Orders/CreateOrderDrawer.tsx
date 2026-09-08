@@ -127,7 +127,7 @@ export function CreateOrderDrawer({ open, onClose, onCreated }: Props) {
   useEffect(() => {
     setRatesLoading(true)
     apiClient
-      .get<MetalRatesResponse>('/precious-metal-rates/current')
+      .get<MetalRatesResponse>('/rates/current')
       .then(({ data }) => {
         setMetalRates(data)
         setRatesError(null)

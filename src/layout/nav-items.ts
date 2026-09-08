@@ -31,7 +31,9 @@ export const navItems: NavItem[] = [
   { to: '/orders', label: 'Orders', icon: ReceiptIcon },
   { to: '/invoices', label: 'Invoices', icon: FileTextIcon },
   { to: '/categories', label: 'Categories', icon: InboxIcon, roles: ['admin', 'manager'] },
-  { to: '/metal-rates', label: 'Metal rates', icon: TrendUpIcon, roles: ['admin', 'manager'] },
+  // Every signed-in role may read rates and their history; the fetch and edit
+  // actions inside the page are what's gated to admin/manager.
+  { to: '/metal-rates', label: 'Metal rates', icon: TrendUpIcon },
   { to: '/users/add', label: 'Settings', icon: SettingsIcon },
 ]
 

@@ -257,7 +257,7 @@ export default function ProductFormPage() {
     let cancelled = false
     setRatesLoading(true)
     apiClient
-      .get<MetalRatesResponse>('/precious-metal-rates/current')
+      .get<MetalRatesResponse>('/rates/current')
       .then(({ data }) => {
         if (!cancelled) {
           setMetalRates(data)
