@@ -1,3 +1,4 @@
+import type { CustomerPaymentStatus } from '../api/customers'
 import type { RateSourceType, RateStatusLabel } from '../api/rates'
 import type { BadgeTone } from '../components/Badge'
 
@@ -36,6 +37,47 @@ export function paymentStatusTone(status: string): BadgeTone {
     case 'pending':
     default:
       return 'danger'
+  }
+}
+
+/**
+ * Copy for an invoice's derived `paymentStatus` ('pending'/'partial'/'paid').
+ * Sentence case, spelled out — never rely on the badge colour alone.
+ */
+export function invoicePaymentStatusLabel(status: string): string {
+  switch (status) {
+    case 'paid':
+      return 'Paid'
+    case 'partial':
+      return 'Partially paid'
+    case 'pending':
+    default:
+      return 'Unpaid'
+  }
+}
+
+/** Tone for a customer's rolled-up `paymentStatus` (outstanding balance across all invoices). */
+export function customerPaymentStatusTone(status: CustomerPaymentStatus | undefined): BadgeTone {
+  switch (status) {
+    case 'paid':
+      return 'success'
+    case 'outstanding':
+      return 'warning'
+    case 'no-invoices':
+    default:
+      return 'neutral'
+  }
+}
+
+export function customerPaymentStatusLabel(status: CustomerPaymentStatus | undefined): string {
+  switch (status) {
+    case 'paid':
+      return 'No outstanding'
+    case 'outstanding':
+      return 'Outstanding'
+    case 'no-invoices':
+    default:
+      return 'No invoices'
   }
 }
 

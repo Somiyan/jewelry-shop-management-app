@@ -1,10 +1,19 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
-import { apiClient } from '../api/client'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  createCustomer,
+  listCustomers,
+  updateCustomer,
+  type CommunicationChannel,
+  type Customer,
+  type CustomerOutstandingFilter,
+  type CustomerSort,
+} from '../api/customers'
 import {
   Badge,
   Button,
-  Card,
   Checkbox,
+  type Column,
   DataTable,
   Drawer,
   EditIcon,
@@ -16,43 +25,14 @@ import {
   Pagination,
   PlusIcon,
   SearchInput,
-  Skeleton,
-  SkeletonText,
+  Select,
   Textarea,
   UsersIcon,
   paginate,
   useToast,
-  type Column,
 } from '../components'
 import { extractErrorMessage, formatCurrency, formatDate } from '../utils/format'
-
-type CommunicationChannel = 'sms' | 'email' | 'whatsapp'
-
-interface Purchase {
-  orderId: string
-  amount: number
-  date: string
-}
-
-interface Customer {
-  _id: string
-  name: string
-  phone: string
-  email?: string
-  address?: string
-  billingAddress?: string
-  city?: string
-  state?: string
-  pincode?: string
-  gstin?: string
-  communicationPreferences?: CommunicationChannel[]
-  notes?: string
-  loyaltyPoints: number
-  totalPurchases: number
-  purchases?: Purchase[]
-  createdAt?: string
-  updatedAt?: string
-}
+import { customerPaymentStatusTone } from '../utils/ui'
 
 interface CustomerFormState {
   name: string
@@ -74,11 +54,19 @@ const CHANNELS: { value: CommunicationChannel; label: string }[] = [
   { value: 'whatsapp', label: 'WhatsApp' },
 ]
 
-const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
-  sms: 'SMS',
-  email: 'Email',
-  whatsapp: 'WhatsApp',
-}
+const OUTSTANDING_FILTERS: { value: '' | CustomerOutstandingFilter; label: string }[] = [
+  { value: '', label: 'All customers' },
+  { value: 'outstanding', label: 'Outstanding' },
+  { value: 'paid', label: 'Fully paid' },
+]
+
+const SORT_OPTIONS: { value: CustomerSort; label: string }[] = [
+  { value: 'name', label: 'Name' },
+  { value: 'highest-outstanding', label: 'Highest outstanding' },
+  { value: 'lowest-outstanding', label: 'Lowest outstanding' },
+  { value: 'highest-purchase', label: 'Highest purchase' },
+  { value: 'recent-purchase', label: 'Recent purchase' },
+]
 
 const emptyForm: CustomerFormState = {
   name: '',
@@ -120,17 +108,6 @@ function validateCustomerForm(form: CustomerFormState): CustomerFormErrors {
   return errors
 }
 
-/** Most recent purchase date, or null when there are none. */
-function lastPurchaseDate(customer: Customer): string | null {
-  const purchases = customer.purchases
-  if (!purchases || purchases.length === 0) return null
-  return purchases.reduce<string | null>((latest, purchase) => {
-    if (!purchase.date) return latest
-    if (!latest) return purchase.date
-    return new Date(purchase.date) > new Date(latest) ? purchase.date : latest
-  }, null)
-}
-
 function FormSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-t border-line pt-4 first:border-t-0 first:pt-0">
@@ -140,23 +117,36 @@ function FormSection({ title, children }: { title: string; children: ReactNode }
   )
 }
 
-function DetailRow({ label, value }: { label: string; value: ReactNode }) {
+/** Currency figure plus a spelled-out status — colour never carries the meaning alone. */
+function OutstandingIndicator({ customer }: { customer: Customer }) {
+  const pending = customer.pendingBalance ?? 0
+  const credit = customer.creditBalance ?? 0
+  const hasOutstanding = pending > 0
   return (
-    <div className="flex items-baseline justify-between gap-4 py-1.5">
-      <dt className="shrink-0 text-sm text-ink-muted">{label}</dt>
-      <dd className="min-w-0 text-right text-sm text-ink">{value}</dd>
+    <div className="flex flex-col items-end gap-1">
+      <span className="font-mono text-sm tabular-nums text-ink">{formatCurrency(pending)}</span>
+      <Badge tone={hasOutstanding ? 'warning' : 'success'} dot>
+        {hasOutstanding ? 'Outstanding' : 'No outstanding'}
+      </Badge>
+      {credit > 0 && (
+        <span className="text-xs text-info">Credit {formatCurrency(credit)}</span>
+      )}
     </div>
   )
 }
 
 export default function CustomersPage() {
   const toast = useToast()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
+  const [outstandingFilter, setOutstandingFilter] = useState<'' | CustomerOutstandingFilter>('')
+  const [sortBy, setSortBy] = useState<CustomerSort>('name')
 
   const [showForm, setShowForm] = useState(false)
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null)
@@ -164,11 +154,6 @@ export default function CustomersPage() {
   const [formErrors, setFormErrors] = useState<CustomerFormErrors>({})
   const [formError, setFormError] = useState<string | null>(null)
   const [isSubmittingForm, setIsSubmittingForm] = useState(false)
-
-  const [detailCustomerId, setDetailCustomerId] = useState<string | null>(null)
-  const [detailCustomer, setDetailCustomer] = useState<Customer | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -183,16 +168,18 @@ export default function CustomersPage() {
     setIsLoading(true)
     setLoadError(null)
     try {
-      const params: Record<string, string> = {}
-      if (debouncedQ.trim()) params.q = debouncedQ.trim()
-      const { data } = await apiClient.get<Customer[]>('/customers', { params })
+      const data = await listCustomers({
+        q: debouncedQ,
+        outstanding: outstandingFilter || undefined,
+        sort: sortBy,
+      })
       setCustomers(data)
     } catch (err) {
       setLoadError(extractErrorMessage(err))
     } finally {
       setIsLoading(false)
     }
-  }, [debouncedQ])
+  }, [debouncedQ, outstandingFilter, sortBy])
 
   useEffect(() => {
     fetchCustomers()
@@ -200,37 +187,28 @@ export default function CustomersPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [debouncedQ])
+  }, [debouncedQ, outstandingFilter, sortBy])
+
+  // Deep link from elsewhere in the app: /customers?edit=<id> opens the edit drawer once loaded.
+  useEffect(() => {
+    const editId = searchParams.get('edit')
+    if (!editId || isLoading) return
+    const customer = customers.find((item) => item._id === editId)
+    if (customer) {
+      openEditForm(customer)
+      const next = new URLSearchParams(searchParams)
+      next.delete('edit')
+      setSearchParams(next, { replace: true })
+    }
+  }, [customers, isLoading, searchParams, setSearchParams])
 
   const pagedCustomers = useMemo(
     () => paginate(customers, page, pageSize),
     [customers, page, pageSize],
   )
 
-  const loadCustomerDetail = useCallback(async (customerId: string) => {
-    setDetailLoading(true)
-    setDetailError(null)
-    try {
-      const { data } = await apiClient.get<Customer>(`/customers/${customerId}`)
-      setDetailCustomer(data)
-    } catch (err) {
-      setDetailError(extractErrorMessage(err))
-    } finally {
-      setDetailLoading(false)
-    }
-  }, [])
-
   function openDetail(customer: Customer) {
-    setDetailCustomerId(customer._id)
-    setDetailCustomer(null)
-    setDetailError(null)
-    loadCustomerDetail(customer._id)
-  }
-
-  function closeDetail() {
-    setDetailCustomerId(null)
-    setDetailCustomer(null)
-    setDetailError(null)
+    navigate(`/customers/${customer._id}`)
   }
 
   function openAddForm() {
@@ -297,17 +275,13 @@ export default function CustomersPage() {
         communicationPreferences: formState.communicationPreferences,
       }
       if (editingCustomerId) {
-        await apiClient.put(`/customers/${editingCustomerId}`, body)
+        await updateCustomer(editingCustomerId, body)
       } else {
-        await apiClient.post('/customers', body)
+        await createCustomer(body)
       }
-      const editedId = editingCustomerId
       closeForm()
       await fetchCustomers()
-      if (editedId && detailCustomerId === editedId) {
-        await loadCustomerDetail(editedId)
-      }
-      toast.success(editedId ? 'Customer updated' : 'Customer added')
+      toast.success(editingCustomerId ? 'Customer updated' : 'Customer added')
     } catch (err) {
       const message = extractErrorMessage(err)
       setFormError(message)
@@ -338,15 +312,6 @@ export default function CustomersPage() {
       render: (row) => <span className="font-mono text-sm text-ink-muted">{row.phone}</span>,
     },
     {
-      key: 'email',
-      header: 'Email',
-      sortable: true,
-      sortValue: (row) => row.email ?? '',
-      render: (row) => (
-        <span className="block max-w-56 truncate text-ink-muted">{row.email || '—'}</span>
-      ),
-    },
-    {
       key: 'loyaltyPoints',
       header: 'Points',
       align: 'right',
@@ -357,40 +322,48 @@ export default function CustomersPage() {
       ),
     },
     {
-      key: 'totalPurchases',
+      key: 'totalInvoiced',
       header: 'Total purchases',
       align: 'right',
       sortable: true,
-      sortValue: (row) => row.totalPurchases ?? 0,
+      sortValue: (row) => row.totalInvoiced ?? row.totalPurchases ?? 0,
       render: (row) => (
-        <span className="font-mono tabular-nums">{formatCurrency(row.totalPurchases)}</span>
+        <span className="font-mono tabular-nums">
+          {formatCurrency(row.totalInvoiced ?? row.totalPurchases)}
+        </span>
       ),
     },
     {
-      key: 'lastPurchase',
+      key: 'pendingBalance',
+      header: 'Outstanding',
+      align: 'right',
+      width: '150px',
+      sortable: true,
+      sortValue: (row) => row.pendingBalance ?? 0,
+      render: (row) => <OutstandingIndicator customer={row} />,
+    },
+    {
+      key: 'lastInvoiceDate',
       header: 'Last purchase',
       align: 'right',
       sortable: true,
-      sortValue: (row) => {
-        const date = lastPurchaseDate(row)
-        return date ? new Date(date) : null
-      },
-      render: (row) => {
-        const date = lastPurchaseDate(row)
-        return (
-          <span className="font-mono text-xs tabular-nums text-ink-muted">
-            {date ? formatDate(date) : '—'}
-          </span>
-        )
-      },
+      sortValue: (row) => (row.lastInvoiceDate ? new Date(row.lastInvoiceDate) : null),
+      render: (row) => (
+        <span className="font-mono text-xs tabular-nums text-ink-muted">
+          {row.lastInvoiceDate ? formatDate(row.lastInvoiceDate) : '—'}
+        </span>
+      ),
     },
     {
       key: 'actions',
       header: <span className="sr-only">Actions</span>,
       align: 'right',
-      width: '110px',
+      width: '160px',
       render: (row) => (
-        <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
+        <div className="flex justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+          <Button size="sm" variant="secondary" onClick={() => openDetail(row)}>
+            View
+          </Button>
           <Button size="sm" variant="secondary" leftIcon={<EditIcon size={14} />} onClick={() => openEditForm(row)}>
             Edit
           </Button>
@@ -399,14 +372,22 @@ export default function CustomersPage() {
     },
   ]
 
-  const emptyState = debouncedQ.trim() ? (
+  const isFiltered = debouncedQ.trim() !== '' || outstandingFilter !== ''
+
+  const emptyState = isFiltered ? (
     <EmptyState
       icon={<InboxIcon size={20} />}
-      title="No customers match that search"
-      description="Try a different name or phone number, or clear the search to see everyone."
+      title="No customers match your filters"
+      description="Try a different name or phone number, or clear the filters to see everyone."
       action={
-        <Button variant="secondary" onClick={() => setQ('')}>
-          Clear search
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setQ('')
+            setOutstandingFilter('')
+          }}
+        >
+          Clear filters
         </Button>
       }
     />
@@ -427,7 +408,7 @@ export default function CustomersPage() {
     <div className="flex flex-col gap-5">
       <PageHeader
         title="Customers"
-        description="Contacts, billing details, loyalty points and purchase history."
+        description="Contacts, billing details, loyalty points and outstanding balances."
         actions={
           <Button leftIcon={<PlusIcon size={16} />} onClick={openAddForm}>
             Add customer
@@ -435,12 +416,30 @@ export default function CustomersPage() {
         }
       />
 
-      <SearchInput
-        value={q}
-        onValueChange={setQ}
-        placeholder="Search by name or phone"
-        className="max-w-md"
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <SearchInput
+          value={q}
+          onValueChange={setQ}
+          placeholder="Search by name or phone"
+          className="w-full sm:max-w-sm"
+        />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Select
+            aria-label="Filter by outstanding balance"
+            value={outstandingFilter}
+            onChange={(event) => setOutstandingFilter(event.target.value as '' | CustomerOutstandingFilter)}
+            options={OUTSTANDING_FILTERS}
+            className="sm:w-44"
+          />
+          <Select
+            aria-label="Sort customers"
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value as CustomerSort)}
+            options={SORT_OPTIONS.map((option) => ({ ...option, label: `Sort: ${option.label}` }))}
+            className="sm:w-52"
+          />
+        </div>
+      </div>
 
       {loadError && (
         <p role="alert" className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
@@ -459,7 +458,7 @@ export default function CustomersPage() {
           onRowClick={openDetail}
           caption="Customers"
           renderMobileCard={(row) => {
-            const last = lastPurchaseDate(row)
+            const hasOutstanding = (row.pendingBalance ?? 0) > 0
             return (
               <div className="flex flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
@@ -475,27 +474,37 @@ export default function CustomersPage() {
                   </Badge>
                 </div>
 
-                <dl className="flex items-baseline justify-between gap-3">
-                  <div>
-                    <dt className="text-xs text-ink-muted">Total purchases</dt>
+                <dl className="flex flex-col gap-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <dt className="text-xs text-ink-muted">Purchases</dt>
                     <dd className="font-mono text-sm tabular-nums text-ink">
-                      {formatCurrency(row.totalPurchases)}
+                      {formatCurrency(row.totalInvoiced ?? row.totalPurchases)}
                     </dd>
                   </div>
-                  <div className="text-right">
-                    <dt className="text-xs text-ink-muted">Last purchase</dt>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <dt className="text-xs text-ink-muted">Paid</dt>
                     <dd className="font-mono text-sm tabular-nums text-ink">
-                      {last ? formatDate(last) : '—'}
+                      {formatCurrency(row.totalPaid ?? 0)}
+                    </dd>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <dt className="text-xs text-ink-muted">Outstanding</dt>
+                    <dd className="font-mono text-sm tabular-nums text-ink">
+                      {formatCurrency(row.pendingBalance ?? 0)}
                     </dd>
                   </div>
                 </dl>
+
+                <Badge tone={customerPaymentStatusTone(row.paymentStatus)} dot className="w-fit">
+                  {hasOutstanding ? 'Outstanding' : row.paymentStatus === 'no-invoices' ? 'No invoices' : 'No outstanding'}
+                </Badge>
 
                 <div
                   className="flex flex-wrap gap-2 border-t border-line pt-3"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <Button variant="secondary" onClick={() => openDetail(row)}>
-                    View details
+                    View history
                   </Button>
                   <Button variant="secondary" onClick={() => openEditForm(row)}>
                     Edit
@@ -521,157 +530,6 @@ export default function CustomersPage() {
           />
         )}
       </div>
-
-      {/* Customer detail. While the edit drawer is open this panel steps aside,
-          then returns with the refreshed record once the form closes. */}
-      <Drawer
-        open={detailCustomerId !== null && !showForm}
-        onClose={closeDetail}
-        title={detailCustomer?.name ?? 'Customer'}
-        description={detailCustomer?.phone}
-        size="lg"
-        footer={
-          detailCustomer ? (
-            <Button
-              onClick={() => {
-                const customer = detailCustomer
-                openEditForm(customer)
-              }}
-            >
-              Edit customer
-            </Button>
-          ) : undefined
-        }
-      >
-        {detailLoading && (
-          <div className="flex flex-col gap-4">
-            <Skeleton className="h-16 w-full rounded-panel" />
-            <Skeleton className="h-40 w-full rounded-panel" />
-            <SkeletonText lines={4} />
-          </div>
-        )}
-
-        {!detailLoading && detailError && (
-          <p role="alert" className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
-            {detailError}
-          </p>
-        )}
-
-        {!detailLoading && !detailError && detailCustomer && (
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-panel border border-line bg-surface p-3">
-                <p className="text-xs font-medium text-ink-muted">Loyalty points</p>
-                <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-ink">
-                  {detailCustomer.loyaltyPoints ?? 0}
-                </p>
-              </div>
-              <div className="rounded-panel border border-line bg-surface p-3">
-                <p className="text-xs font-medium text-ink-muted">Total purchases</p>
-                <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-ink">
-                  {formatCurrency(detailCustomer.totalPurchases)}
-                </p>
-              </div>
-            </div>
-
-            <Card title="Contact" padding="sm">
-              <dl className="divide-y divide-line">
-                <DetailRow
-                  label="Phone"
-                  value={<span className="font-mono">{detailCustomer.phone}</span>}
-                />
-                <DetailRow label="Email" value={detailCustomer.email || '—'} />
-                <DetailRow label="Address" value={detailCustomer.address || '—'} />
-                <DetailRow label="Customer since" value={formatDate(detailCustomer.createdAt)} />
-              </dl>
-            </Card>
-
-            <Card title="Billing" padding="sm">
-              <dl className="divide-y divide-line">
-                <DetailRow label="Billing address" value={detailCustomer.billingAddress || '—'} />
-                <DetailRow label="City" value={detailCustomer.city || '—'} />
-                <DetailRow label="State" value={detailCustomer.state || '—'} />
-                <DetailRow
-                  label="PIN code"
-                  value={
-                    detailCustomer.pincode ? (
-                      <span className="font-mono tabular-nums">{detailCustomer.pincode}</span>
-                    ) : (
-                      '—'
-                    )
-                  }
-                />
-                <DetailRow
-                  label="GSTIN"
-                  value={
-                    detailCustomer.gstin ? (
-                      <span className="font-mono">{detailCustomer.gstin}</span>
-                    ) : (
-                      '—'
-                    )
-                  }
-                />
-              </dl>
-            </Card>
-
-            <Card title="Communication preferences" padding="sm">
-              {detailCustomer.communicationPreferences &&
-              detailCustomer.communicationPreferences.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {detailCustomer.communicationPreferences.map((channel) => (
-                    <Badge key={channel} tone="info">
-                      {CHANNEL_LABELS[channel] ?? channel}
-                    </Badge>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-ink-muted">No channels selected.</p>
-              )}
-            </Card>
-
-            {detailCustomer.notes && (
-              <Card title="Notes" padding="sm">
-                <p className="text-sm text-ink-muted">{detailCustomer.notes}</p>
-              </Card>
-            )}
-
-            <Card
-              title="Purchase history"
-              description={
-                detailCustomer.purchases && detailCustomer.purchases.length > 0
-                  ? `${detailCustomer.purchases.length} order${detailCustomer.purchases.length === 1 ? '' : 's'}`
-                  : undefined
-              }
-              padding="none"
-            >
-              {detailCustomer.purchases && detailCustomer.purchases.length > 0 ? (
-                <ul className="divide-y divide-line">
-                  {detailCustomer.purchases.map((purchase, index) => (
-                    <li
-                      key={`${purchase.orderId}-${index}`}
-                      className="flex items-baseline justify-between gap-4 px-4 py-2.5"
-                    >
-                      <span className="min-w-0">
-                        <span className="block text-sm text-ink">{formatDate(purchase.date)}</span>
-                        <span className="block font-mono text-xs text-ink-muted">
-                          Order {String(purchase.orderId).slice(-6)}
-                        </span>
-                      </span>
-                      <span className="shrink-0 font-mono text-sm tabular-nums text-ink">
-                        {formatCurrency(purchase.amount)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="px-4 py-6 text-center text-sm text-ink-muted">
-                  No purchases recorded yet.
-                </p>
-              )}
-            </Card>
-          </div>
-        )}
-      </Drawer>
 
       {/* Add / edit customer */}
       <Drawer

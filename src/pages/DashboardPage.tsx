@@ -51,6 +51,14 @@ interface DashboardSummary {
   monthlyExpenses: number
   profitMargin: number
   totalInvoices: number
+  /** Sum of per-invoice outstanding, clamped at 0 each. */
+  totalOutstanding: number
+  /** Count of invoices with outstanding > 0. */
+  pendingInvoices: number
+  /** Sum of payments recorded today. */
+  collectedToday: number
+  /** Sum of all active payments, all time. */
+  totalCollected: number
 }
 
 interface RevenuePoint {
@@ -446,6 +454,34 @@ export default function DashboardPage() {
           isLoading={stock.loading}
           icon={<AlertIcon size={16} />}
           meta="Low or out of stock"
+        />
+        <StatCard
+          label="Total outstanding"
+          value={summary.failed ? '—' : formatCurrency(summary.data?.totalOutstanding)}
+          isLoading={summary.loading}
+          icon={<AlertIcon size={16} />}
+          meta="Across all invoices"
+        />
+        <StatCard
+          label="Collected today"
+          value={summary.failed ? '—' : formatCurrency(summary.data?.collectedToday)}
+          isLoading={summary.loading}
+          icon={<TagIcon size={16} />}
+          meta="Payments recorded since midnight"
+        />
+        <StatCard
+          label="Total collected"
+          value={summary.failed ? '—' : formatCurrency(summary.data?.totalCollected)}
+          isLoading={summary.loading}
+          icon={<ReceiptIcon size={16} />}
+          meta="All active payments, all time"
+        />
+        <StatCard
+          label="Pending invoices"
+          value={summary.failed ? '—' : (summary.data?.pendingInvoices ?? 0).toLocaleString('en-IN')}
+          isLoading={summary.loading}
+          icon={<FileTextIcon size={16} />}
+          meta="With an outstanding balance"
         />
       </div>
 

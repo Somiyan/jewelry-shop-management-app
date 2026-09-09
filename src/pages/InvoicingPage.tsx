@@ -1,6 +1,17 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../api/client'
+import {
+  addPayment,
+  getInvoicePayments,
+  paymentMethodLabel as paymentRecordMethodLabel,
+  paymentMethodOptions,
+  paymentSourceLabel,
+  reversePayment,
+  type Payment,
+  type PaymentMethod as PaymentRecordMethod,
+} from '../api/payments'
+import { useAuth } from '../auth'
 import {
   Badge,
   Button,
@@ -14,6 +25,7 @@ import {
   FigureStack,
   IconButton,
   Input,
+  Modal,
   PageHeader,
   Pagination,
   PlusIcon,
@@ -28,13 +40,12 @@ import {
   useToast,
 } from '../components'
 import { extractErrorMessage, formatCurrency, formatDate } from '../utils/format'
-import { paymentStatusTone } from '../utils/ui'
+import { invoicePaymentStatusLabel, paymentStatusTone } from '../utils/ui'
 
 type PaymentMethod = 'cash' | 'card' | 'upi' | 'cheque'
 type PaymentStatus = 'pending' | 'paid' | 'partial'
 
 const PAYMENT_METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'cheque']
-const PAYMENT_STATUSES: PaymentStatus[] = ['pending', 'partial', 'paid']
 
 const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: 'Cash',
@@ -43,11 +54,8 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cheque: 'Cheque',
 }
 
-const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
-  pending: 'Pending',
-  partial: 'Partial',
-  paid: 'Paid',
-}
+/** Column-sort order only — the status itself is always derived server-side. */
+const PAYMENT_STATUS_ORDER: PaymentStatus[] = ['pending', 'partial', 'paid']
 
 const PAGE_SIZE = 10
 
@@ -110,6 +118,8 @@ interface Invoice {
   amountPaid?: number
   paymentMethod: PaymentMethod
   paymentStatus: PaymentStatus
+  /** Present on `GET /invoices/:id`; the authoritative derived balance. */
+  outstanding?: number
   notes?: string
   oldGoldExchange?: OldGoldExchange
 }
@@ -133,13 +143,12 @@ function paymentMethodLabel(method: PaymentMethod): string {
   return PAYMENT_METHOD_LABELS[method] ?? method
 }
 
-function paymentStatusLabel(status: PaymentStatus): string {
-  return PAYMENT_STATUS_LABELS[status] ?? status
-}
-
 export default function InvoicingPage() {
   const toast = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { hasRole } = useAuth()
+  const canManagePayments = hasRole('admin', 'manager')
 
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [orders, setOrders] = useState<Order[]>([])
@@ -164,9 +173,35 @@ export default function InvoicingPage() {
 
   const [detailInvoiceId, setDetailInvoiceId] = useState<string | null>(null)
   const [detailCustomer, setDetailCustomer] = useState<CustomerDetail | null>(null)
-  const [paymentUpdatingId, setPaymentUpdatingId] = useState<string | null>(null)
   const [pdfLoadingId, setPdfLoadingId] = useState<string | null>(null)
   const [printLoadingId, setPrintLoadingId] = useState<string | null>(null)
+
+  // Fresh payment state for the open invoice — fetched on open and refreshed
+  // after every payment action so the summary panel never drifts from the
+  // server's derived paymentStatus.
+  const [paymentInfo, setPaymentInfo] = useState<{
+    amountPaid: number
+    paymentStatus: PaymentStatus
+    outstanding: number
+    finalAmount: number
+  } | null>(null)
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [paymentsLoading, setPaymentsLoading] = useState(false)
+
+  const [showAddPayment, setShowAddPayment] = useState(false)
+  const [paymentAmount, setPaymentAmount] = useState('')
+  const [paymentRecordMethod, setPaymentRecordMethod] = useState<PaymentRecordMethod>('cash')
+  const [paymentDate, setPaymentDate] = useState('')
+  const [paymentReference, setPaymentReference] = useState('')
+  const [paymentNotes, setPaymentNotes] = useState('')
+  const [paymentFormError, setPaymentFormError] = useState<string | null>(null)
+  const [submittingPayment, setSubmittingPayment] = useState(false)
+  const [lastRecordedPaymentId, setLastRecordedPaymentId] = useState<string | null>(null)
+
+  const [reversingPayment, setReversingPayment] = useState<Payment | null>(null)
+  const [reverseReason, setReverseReason] = useState('')
+  const [reverseReasonError, setReverseReasonError] = useState<string | null>(null)
+  const [reversing, setReversing] = useState(false)
 
   const fetchAll = useCallback(async () => {
     setIsLoading(true)
@@ -240,6 +275,150 @@ export default function InvoicingPage() {
     return (detailInvoice.taxAmount / detailInvoice.subtotal) * 100 / 2
   }, [detailInvoice])
 
+  // Deep link from elsewhere (e.g. a customer's purchase history): /invoices?invoice=<id>
+  // opens that invoice's detail drawer once the list has loaded.
+  useEffect(() => {
+    const invoiceParam = searchParams.get('invoice')
+    if (!invoiceParam) return
+    if (!invoices.some((invoice) => invoice._id === invoiceParam)) return
+    setDetailInvoiceId(invoiceParam)
+    const next = new URLSearchParams(searchParams)
+    next.delete('invoice')
+    setSearchParams(next, { replace: true })
+  }, [invoices, searchParams, setSearchParams])
+
+  const loadPaymentPanel = useCallback(async (invoiceId: string) => {
+    setPaymentsLoading(true)
+    try {
+      const [invoiceRes, paymentRows] = await Promise.all([
+        apiClient.get<Invoice>(`/invoices/${invoiceId}`),
+        getInvoicePayments(invoiceId),
+      ])
+      const record = invoiceRes.data
+      const amountPaid = record.amountPaid ?? 0
+      setPaymentInfo({
+        amountPaid,
+        paymentStatus: record.paymentStatus,
+        outstanding: record.outstanding ?? Math.max(record.finalAmount - amountPaid, 0),
+        finalAmount: record.finalAmount,
+      })
+      setPayments(paymentRows)
+    } catch (err) {
+      toast.error(extractErrorMessage(err))
+    } finally {
+      setPaymentsLoading(false)
+    }
+  }, [toast])
+
+  useEffect(() => {
+    if (!detailInvoiceId) {
+      setPaymentInfo(null)
+      setPayments([])
+      setLastRecordedPaymentId(null)
+      return
+    }
+    void loadPaymentPanel(detailInvoiceId)
+  }, [detailInvoiceId, loadPaymentPanel])
+
+  // Fresh figures once loaded; falls back to the list snapshot while the fetch is in flight.
+  const effectivePayment = useMemo(() => {
+    if (paymentInfo) return paymentInfo
+    if (!detailInvoice) return null
+    const amountPaid = detailInvoice.amountPaid ?? 0
+    return {
+      amountPaid,
+      paymentStatus: detailInvoice.paymentStatus,
+      outstanding: detailInvoice.outstanding ?? Math.max(detailInvoice.finalAmount - amountPaid, 0),
+      finalAmount: detailInvoice.finalAmount,
+    }
+  }, [paymentInfo, detailInvoice])
+
+  const paidPercent = effectivePayment && effectivePayment.finalAmount > 0
+    ? Math.min(100, Math.round((effectivePayment.amountPaid / effectivePayment.finalAmount) * 100))
+    : 0
+
+  function openAddPayment() {
+    if (!effectivePayment) return
+    setPaymentAmount(effectivePayment.outstanding > 0 ? effectivePayment.outstanding.toFixed(2) : '')
+    setPaymentRecordMethod('cash')
+    setPaymentDate(new Date().toISOString().slice(0, 10))
+    setPaymentReference('')
+    setPaymentNotes('')
+    setPaymentFormError(null)
+    setShowAddPayment(true)
+  }
+
+  function closeAddPayment() {
+    setShowAddPayment(false)
+    setPaymentFormError(null)
+  }
+
+  async function handleAddPaymentSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!detailInvoice || !effectivePayment) return
+
+    const amountNum = Number(paymentAmount)
+    if (!paymentAmount || Number.isNaN(amountNum) || amountNum <= 0) {
+      setPaymentFormError('Enter an amount greater than zero.')
+      return
+    }
+    if (amountNum > effectivePayment.outstanding) {
+      setPaymentFormError(
+        `Payment cannot exceed the outstanding balance of ${formatCurrency(effectivePayment.outstanding)}.`,
+      )
+      return
+    }
+
+    setPaymentFormError(null)
+    setSubmittingPayment(true)
+    try {
+      const response = await addPayment(detailInvoice._id, {
+        amount: amountNum,
+        method: paymentRecordMethod,
+        date: paymentDate ? new Date(paymentDate).toISOString() : undefined,
+        reference: paymentReference || undefined,
+        notes: paymentNotes || undefined,
+      })
+      setShowAddPayment(false)
+      setLastRecordedPaymentId(response.payment._id)
+      await Promise.all([loadPaymentPanel(detailInvoice._id), fetchAll()])
+      toast.success(`Payment of ${formatCurrency(amountNum)} recorded`)
+    } catch (err) {
+      const message = extractErrorMessage(err)
+      setPaymentFormError(message)
+      toast.error(message)
+    } finally {
+      setSubmittingPayment(false)
+    }
+  }
+
+  function openReversePayment(payment: Payment) {
+    setReversingPayment(payment)
+    setReverseReason('')
+    setReverseReasonError(null)
+  }
+
+  async function handleReverseConfirm() {
+    if (!reversingPayment || !detailInvoice) return
+    if (!reverseReason.trim()) {
+      setReverseReasonError('Enter a reason for the reversal.')
+      return
+    }
+    setReverseReasonError(null)
+    setReversing(true)
+    try {
+      await reversePayment(reversingPayment._id, reverseReason.trim())
+      setReversingPayment(null)
+      setReverseReason('')
+      await Promise.all([loadPaymentPanel(detailInvoice._id), fetchAll()])
+      toast.success('Payment reversed')
+    } catch (err) {
+      toast.error(extractErrorMessage(err))
+    } finally {
+      setReversing(false)
+    }
+  }
+
   const currentPage = Math.min(page, pageCount(filteredInvoices.length, PAGE_SIZE))
   const pageRows = paginate(filteredInvoices, currentPage, PAGE_SIZE)
 
@@ -302,21 +481,6 @@ export default function InvoicingPage() {
       toast.error(message)
     } finally {
       setIsSubmittingForm(false)
-    }
-  }
-
-  async function handlePaymentStatusChange(invoice: Invoice, paymentStatus: PaymentStatus) {
-    setPaymentUpdatingId(invoice._id)
-    try {
-      await apiClient.put(`/invoices/${invoice._id}/payment-status`, { paymentStatus })
-      toast.success(`Payment marked ${paymentStatusLabel(paymentStatus).toLowerCase()}`)
-      await fetchAll()
-    } catch (err) {
-      const message = extractErrorMessage(err)
-      setLoadError(message)
-      toast.error(message)
-    } finally {
-      setPaymentUpdatingId(null)
     }
   }
 
@@ -418,10 +582,10 @@ export default function InvoicingPage() {
       header: 'Payment',
       width: '120px',
       sortable: true,
-      sortValue: (invoice) => PAYMENT_STATUSES.indexOf(invoice.paymentStatus),
+      sortValue: (invoice) => PAYMENT_STATUS_ORDER.indexOf(invoice.paymentStatus),
       render: (invoice) => (
         <Badge tone={paymentStatusTone(invoice.paymentStatus)} dot>
-          {paymentStatusLabel(invoice.paymentStatus)}
+          {invoicePaymentStatusLabel(invoice.paymentStatus)}
         </Badge>
       ),
     },
@@ -443,6 +607,86 @@ export default function InvoicingPage() {
         >
           <DownloadIcon size={16} />
         </IconButton>
+      ),
+    },
+  ]
+
+  const paymentColumns: Column<Payment>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      width: '110px',
+      render: (row) => (
+        <span className={cx('font-mono text-sm', row.status === 'REVERSED' && 'text-ink-muted line-through')}>
+          {formatDate(row.date)}
+        </span>
+      ),
+    },
+    {
+      key: 'method',
+      header: 'Method',
+      render: (row) => (
+        <div className="min-w-0">
+          <span className="text-sm text-ink">{paymentRecordMethodLabel(row.method)}</span>
+          {paymentSourceLabel(row.source) && (
+            <span className="block text-xs text-ink-muted">{paymentSourceLabel(row.source)}</span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      width: '120px',
+      render: (row) => (
+        <span
+          className={cx(
+            'font-mono text-sm font-medium',
+            row.status === 'REVERSED' ? 'text-ink-muted line-through' : 'text-ink',
+          )}
+        >
+          {formatCurrency(row.amount)}
+        </span>
+      ),
+    },
+    {
+      key: 'reference',
+      header: 'Reference',
+      render: (row) => <span className="font-mono text-xs text-ink-muted">{row.reference || '—'}</span>,
+    },
+    {
+      key: 'recordedBy',
+      header: 'Recorded by',
+      render: (row) => <span className="text-sm text-ink-muted">{row.createdBy?.username ?? 'System'}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (row) =>
+        row.status === 'REVERSED' ? (
+          <Badge tone="danger">Voided</Badge>
+        ) : (
+          <Badge tone="success" dot>
+            Active
+          </Badge>
+        ),
+    },
+    {
+      key: 'rowActions',
+      header: <span className="sr-only">Actions</span>,
+      align: 'right',
+      render: (row) => (
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="secondary" onClick={() => navigate(`/payments/${row._id}/receipt`)}>
+            Receipt
+          </Button>
+          {row.status === 'ACTIVE' && canManagePayments && (
+            <Button size="sm" variant="danger" onClick={() => openReversePayment(row)}>
+              Reverse
+            </Button>
+          )}
+        </div>
       ),
     },
   ]
@@ -531,7 +775,7 @@ export default function InvoicingPage() {
                   </p>
                 </div>
                 <Badge tone={paymentStatusTone(invoice.paymentStatus)} dot>
-                  {paymentStatusLabel(invoice.paymentStatus)}
+                  {invoicePaymentStatusLabel(invoice.paymentStatus)}
                 </Badge>
               </div>
               <div className="flex items-center justify-between gap-3 border-t border-line pt-2">
@@ -962,15 +1206,15 @@ export default function InvoicingPage() {
                     total={{ label: 'Grand total', value: detailInvoice.finalAmount }}
                   />
 
-                  {detailInvoice.paymentStatus === 'partial' && detailInvoice.amountPaid !== undefined && (
+                  {effectivePayment && effectivePayment.paymentStatus !== 'pending' && (
                     <div className="mt-3 border-t border-neutral-300 pt-3">
                       <FigureStack
                         size="sm"
-                        rows={[{ label: 'Amount paid', value: detailInvoice.amountPaid, tone: 'success' }]}
+                        rows={[{ label: 'Amount paid', value: effectivePayment.amountPaid, tone: 'success' }]}
                         total={{
                           label: 'Balance due',
-                          value: detailInvoice.finalAmount - detailInvoice.amountPaid,
-                          tone: 'danger',
+                          value: effectivePayment.outstanding,
+                          tone: effectivePayment.outstanding > 0 ? 'danger' : 'default',
                         }}
                       />
                     </div>
@@ -981,9 +1225,11 @@ export default function InvoicingPage() {
                 <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
                   <span className="text-neutral-500">Payment:</span>
                   <span>{paymentMethodLabel(detailInvoice.paymentMethod)}</span>
-                  <Badge tone={paymentStatusTone(detailInvoice.paymentStatus)} dot>
-                    {paymentStatusLabel(detailInvoice.paymentStatus)}
-                  </Badge>
+                  {effectivePayment && (
+                    <Badge tone={paymentStatusTone(effectivePayment.paymentStatus)} dot>
+                      {invoicePaymentStatusLabel(effectivePayment.paymentStatus)}
+                    </Badge>
+                  )}
                 </div>
 
                 {detailInvoice.notes && (
@@ -1005,46 +1251,147 @@ export default function InvoicingPage() {
 
             <Card
               title="Payment"
-              description="Update what has been collected against this invoice."
+              description="What has been collected against this invoice."
+              actions={
+                effectivePayment && effectivePayment.outstanding > 0 ? (
+                  <Button size="sm" leftIcon={<PlusIcon size={16} />} onClick={openAddPayment}>
+                    Add payment
+                  </Button>
+                ) : undefined
+              }
             >
-              <div
-                role="group"
-                aria-label="Payment status"
-                className="grid grid-cols-3 gap-1 rounded-control bg-sunken p-1"
-              >
-                {PAYMENT_STATUSES.map((status) => {
-                  const active = detailInvoice.paymentStatus === status
-                  return (
-                    <button
-                      key={status}
-                      type="button"
-                      aria-pressed={active}
-                      disabled={paymentUpdatingId === detailInvoice._id || active}
-                      onClick={() => handlePaymentStatusChange(detailInvoice, status)}
-                      className={cx(
-                        'min-h-11 rounded-control px-3 text-sm font-medium transition-colors disabled:cursor-default md:min-h-9',
-                        active
-                          ? 'bg-surface text-ink'
-                          : 'text-ink-muted hover:bg-surface hover:text-ink',
-                      )}
+              {effectivePayment && (
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3">
+                    <div className="flex items-baseline justify-between gap-3 sm:block">
+                      <p className="text-xs text-ink-muted">Invoice total</p>
+                      <p className="font-mono text-sm font-semibold text-ink">
+                        {formatCurrency(effectivePayment.finalAmount)}
+                      </p>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3 sm:block">
+                      <p className="text-xs text-ink-muted">Paid</p>
+                      <p className="font-mono text-sm font-semibold text-success">
+                        {formatCurrency(effectivePayment.amountPaid)}
+                      </p>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-3 sm:block">
+                      <p className="text-xs text-ink-muted">Outstanding</p>
+                      <p
+                        className={cx(
+                          'font-mono text-sm font-semibold',
+                          effectivePayment.outstanding > 0 ? 'text-warning' : 'text-ink-muted',
+                        )}
+                      >
+                        {formatCurrency(effectivePayment.outstanding)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge tone={paymentStatusTone(effectivePayment.paymentStatus)} dot>
+                        <span aria-live="polite">{invoicePaymentStatusLabel(effectivePayment.paymentStatus)}</span>
+                      </Badge>
+                      <span className="font-mono text-xs text-ink-muted">{paidPercent}% paid</span>
+                    </div>
+                    <div
+                      role="progressbar"
+                      aria-label="Percentage of invoice paid"
+                      aria-valuenow={paidPercent}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-live="polite"
+                      className="mt-1.5 h-2 w-full overflow-hidden rounded-pill bg-sunken"
                     >
-                      <span className="inline-flex items-center gap-1.5">
-                        <span
-                          aria-hidden="true"
-                          className={cx(
-                            'h-1.5 w-1.5 rounded-full',
-                            status === 'paid'
-                              ? 'bg-success'
-                              : status === 'partial'
-                                ? 'bg-warning'
-                                : 'bg-danger',
-                          )}
-                        />
-                        {paymentStatusLabel(status)}
-                      </span>
-                    </button>
-                  )
-                })}
+                      <div
+                        className={cx(
+                          'h-full rounded-pill transition-[width] duration-150',
+                          paidPercent >= 100 ? 'bg-success' : 'bg-accent',
+                        )}
+                        style={{ width: `${paidPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {lastRecordedPaymentId && (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-control bg-success-soft px-3 py-2 text-sm text-success">
+                  <span>Payment recorded.</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => navigate(`/payments/${lastRecordedPaymentId}/receipt`)}
+                    >
+                      View receipt
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setLastRecordedPaymentId(null)}>
+                      Dismiss
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-5 border-t border-line pt-4">
+                <h3 className="mb-2 text-sm font-semibold text-ink">Payment history</h3>
+                <DataTable
+                  columns={paymentColumns}
+                  rows={payments}
+                  getRowId={(row) => row._id}
+                  isLoading={paymentsLoading}
+                  caption="Payment history"
+                  emptyState={
+                    <p className="px-4 py-6 text-center text-sm text-ink-muted">
+                      No payments recorded yet.
+                    </p>
+                  }
+                  renderMobileCard={(row) => (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p
+                            className={cx(
+                              'font-mono text-sm font-medium',
+                              row.status === 'REVERSED' ? 'text-ink-muted line-through' : 'text-ink',
+                            )}
+                          >
+                            {formatCurrency(row.amount)}
+                          </p>
+                          <p className="text-xs text-ink-muted">
+                            {formatDate(row.date)} · {paymentRecordMethodLabel(row.method)}
+                          </p>
+                        </div>
+                        {row.status === 'REVERSED' ? (
+                          <Badge tone="danger">Voided</Badge>
+                        ) : (
+                          <Badge tone="success" dot>
+                            Active
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-ink-muted">
+                        Recorded by {row.createdBy?.username ?? 'System'}
+                        {row.reference ? ` · Ref ${row.reference}` : ''}
+                      </p>
+                      <div className="flex gap-2 border-t border-line pt-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => navigate(`/payments/${row._id}/receipt`)}
+                        >
+                          Receipt
+                        </Button>
+                        {row.status === 'ACTIVE' && canManagePayments && (
+                          <Button size="sm" variant="danger" onClick={() => openReversePayment(row)}>
+                            Reverse
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                />
               </div>
 
               <div className="mt-4 border-t border-line pt-3">
@@ -1060,6 +1407,133 @@ export default function InvoicingPage() {
           </div>
         )}
       </Drawer>
+
+      {/* Add payment */}
+      <Modal
+        open={showAddPayment}
+        onClose={closeAddPayment}
+        title="Add payment"
+        description={
+          effectivePayment
+            ? `Outstanding balance ${formatCurrency(effectivePayment.outstanding)}`
+            : undefined
+        }
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeAddPayment} disabled={submittingPayment}>
+              Cancel
+            </Button>
+            <Button type="submit" form="add-payment-form" loading={submittingPayment}>
+              Record payment
+            </Button>
+          </>
+        }
+      >
+        <form id="add-payment-form" onSubmit={handleAddPaymentSubmit} className="flex flex-col gap-4" noValidate>
+          <Field label="Amount" required>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={paymentAmount}
+              onChange={(event) => setPaymentAmount(event.target.value)}
+              className="font-mono"
+            />
+          </Field>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Payment method">
+              <Select
+                value={paymentRecordMethod}
+                onChange={(event) => setPaymentRecordMethod(event.target.value as PaymentRecordMethod)}
+                options={paymentMethodOptions()}
+              />
+            </Field>
+            <Field label="Date">
+              <Input
+                type="date"
+                value={paymentDate}
+                onChange={(event) => setPaymentDate(event.target.value)}
+              />
+            </Field>
+          </div>
+          <Field label="Reference" hint="Optional. Cheque no., UTR, transaction id.">
+            <Input
+              value={paymentReference}
+              onChange={(event) => setPaymentReference(event.target.value)}
+            />
+          </Field>
+          <Field label="Notes" hint="Optional.">
+            <Textarea
+              value={paymentNotes}
+              onChange={(event) => setPaymentNotes(event.target.value)}
+              rows={2}
+            />
+          </Field>
+
+          {paymentFormError && (
+            <p role="alert" className="rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
+              {paymentFormError}
+            </p>
+          )}
+        </form>
+      </Modal>
+
+      {/* Reverse payment — a hand-built Modal rather than ConfirmDialog: the
+          reason field is required block content (Field + Textarea), and
+          ConfirmDialog's `message` renders inside a <p>, which cannot
+          legally contain block elements. */}
+      <Modal
+        open={reversingPayment !== null}
+        onClose={() => {
+          if (!reversing) {
+            setReversingPayment(null)
+            setReverseReason('')
+            setReverseReasonError(null)
+          }
+        }}
+        title="Reverse this payment?"
+        size="sm"
+        closeOnBackdrop={!reversing}
+        closeOnEscape={!reversing}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              disabled={reversing}
+              onClick={() => {
+                setReversingPayment(null)
+                setReverseReason('')
+                setReverseReasonError(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button variant="danger" loading={reversing} onClick={handleReverseConfirm}>
+              Reverse payment
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-ink-muted">
+            {reversingPayment
+              ? `This voids the ${formatCurrency(reversingPayment.amount)} payment recorded on ${formatDate(reversingPayment.date)}. It will no longer count toward the invoice's paid amount.`
+              : null}
+          </p>
+          <Field label="Reason" required error={reverseReasonError}>
+            <Textarea
+              value={reverseReason}
+              onChange={(event) => {
+                setReverseReason(event.target.value)
+                if (reverseReasonError) setReverseReasonError(null)
+              }}
+              rows={2}
+            />
+          </Field>
+        </div>
+      </Modal>
     </div>
   )
 }
