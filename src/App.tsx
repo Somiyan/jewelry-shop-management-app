@@ -4,11 +4,13 @@ import { useAuth } from './auth'
 import { AppLayout } from './layout'
 import AddUserPage from './pages/AddUserPage'
 import CategoryMasterPage from './pages/CategoryMasterPage'
+import CustomerDetailPage from './pages/CustomerDetailPage'
 import CustomersPage from './pages/CustomersPage'
 import DashboardPage from './pages/DashboardPage'
 import InvoicingPage from './pages/InvoicingPage'
 import LoginPage from './pages/LoginPage'
 import OrdersPage from './pages/OrdersPage'
+import PaymentReceiptPage from './pages/PaymentReceiptPage'
 import PreciousMetalRatesPage from './pages/PreciousMetalRatesPage'
 import ProductDetailPage from './pages/ProductDetailPage'
 import ProductFormPage from './pages/ProductFormPage'
@@ -30,6 +32,16 @@ function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/users/add" element={<AddUserPage />} />
 
+      {/* Standalone print view — deliberately outside AppLayout so no sidebar/header chrome prints. */}
+      <Route
+        path="/payments/:id/receipt"
+        element={
+          <RequireAuth>
+            <PaymentReceiptPage />
+          </RequireAuth>
+        }
+      />
+
       {/* Everything authenticated renders inside the app shell. */}
       <Route
         element={
@@ -44,6 +56,7 @@ function App() {
         <Route path="/products/:id/edit" element={<ProductFormPage />} />
         <Route path="/products/:id" element={<ProductDetailPage />} />
         <Route path="/customers" element={<CustomersPage />} />
+        <Route path="/customers/:id" element={<CustomerDetailPage />} />
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/sales/new" element={<SalesJourneyPage />} />
         <Route path="/invoices" element={<InvoicingPage />} />
