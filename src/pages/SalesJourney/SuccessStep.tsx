@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../../api/client'
-import { Badge, Button, Card, FigureStack } from '../../components'
+import { Badge, Button, Card, FigureStack, type FigureRow } from '../../components'
 import { AlertIcon, CheckIcon, DownloadIcon, PrintIcon, ReceiptIcon } from '../../components/icons'
 import { extractErrorMessage } from '../../utils/format'
-import { paymentStatusTone } from '../../utils/ui'
+import { invoicePaymentStatusLabel, paymentStatusTone } from '../../utils/ui'
 import type { WizardState } from './state'
 
 interface Props {
@@ -25,8 +25,23 @@ export default function SuccessStep({ state, onStartNewSale }: Props) {
 
   const result = state.result
   if (!result) return null
-  const { order, invoice } = result
+  const { order, invoice, lifecycleWarning } = result
   const balanceDue = invoice.finalAmount - invoice.amountPaid
+
+  // GST is broken into CGST+SGST or IGST, never shown as one flat "Tax" row,
+  // to match the assay-stack figure elsewhere in the app. Older invoices
+  // (recorded before billing type existed) fall back to the plain figure.
+  const gstRows: FigureRow[] =
+    invoice.billingType === 'GST'
+      ? invoice.isInterState
+        ? [{ label: 'IGST', value: invoice.igstAmount ?? 0, tone: 'muted' }]
+        : [
+            { label: 'CGST', value: invoice.cgstAmount ?? 0, tone: 'muted' },
+            { label: 'SGST', value: invoice.sgstAmount ?? 0, tone: 'muted' },
+          ]
+      : invoice.billingType === 'NON_GST'
+        ? [{ label: 'GST', value: 'Not applicable', tone: 'muted' }]
+        : [{ label: 'Tax', value: invoice.taxAmount, tone: 'muted' }]
 
   async function ensurePdf(): Promise<string | null> {
     if (pdfBlobUrl) return pdfBlobUrl
@@ -79,18 +94,33 @@ export default function SuccessStep({ state, onStartNewSale }: Props) {
       </div>
 
       <Card className="w-full text-left">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-xs text-ink-muted">Customer</p>
             <p className="font-medium text-ink">{state.customer?.name}</p>
           </div>
-          <Badge tone={paymentStatusTone(invoice.paymentStatus)}>{invoice.paymentStatus}</Badge>
+          <div className="flex items-center gap-2">
+            {invoice.billingType && <Badge tone="neutral">{invoice.billingType === 'GST' ? 'GST' : 'Non-GST'}</Badge>}
+            <Badge tone={paymentStatusTone(invoice.paymentStatus)}>
+              {invoicePaymentStatusLabel(invoice.paymentStatus)}
+            </Badge>
+          </div>
         </div>
+
+        {lifecycleWarning && (
+          <p
+            role="status"
+            className="mb-4 flex items-start gap-2 rounded-control bg-warning-soft px-3 py-2 text-sm text-warning"
+          >
+            <AlertIcon size={16} className="mt-0.5 shrink-0" />
+            {lifecycleWarning}
+          </p>
+        )}
 
         <FigureStack
           rows={[
             { label: 'Subtotal', value: invoice.subtotal, tone: 'muted' },
-            { label: 'Tax', value: invoice.taxAmount, tone: 'muted' },
+            ...gstRows,
             { label: 'Discount', value: -invoice.discount, tone: 'muted' },
             { label: 'Amount paid', value: invoice.amountPaid, tone: 'success' },
             { label: 'Balance due', value: balanceDue, tone: balanceDue > 0 ? 'danger' : 'muted' },

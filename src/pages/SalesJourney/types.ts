@@ -1,3 +1,5 @@
+import type { MakingChargeOverride } from '../../api/sales'
+
 export type MetalType = 'gold' | 'silver'
 export type Purity = '24K' | '22K' | '18K' | '925'
 export type ProductType = 'ring' | 'necklace' | 'bracelet' | 'earring' | 'pendant'
@@ -5,6 +7,28 @@ export type StockLevel = 'red' | 'yellow' | 'green'
 export type PaymentMethod = 'cash' | 'card' | 'upi' | 'cheque' | 'bank-transfer' | 'other'
 export type CommPref = 'sms' | 'email' | 'whatsapp'
 export type PaymentStatus = 'pending' | 'paid' | 'partial'
+
+/**
+ * The sales pricing/checkout types live in `src/api/sales.ts` — this is the
+ * single source of truth for their shape (mirrors the backend contract
+ * exactly). Re-exported here so the rest of the wizard can keep importing
+ * from `./types` without caring which module owns the definition.
+ */
+export type {
+  BelowValueApproval,
+  BelowValueWarning,
+  BillingType,
+  CalculateSalePayload,
+  CheckoutPayload,
+  CheckoutResult,
+  InvoiceResult,
+  MakingChargeOverride,
+  MakingChargeType,
+  OrderResult,
+  SaleCalculation,
+  SaleLine,
+  SalesPolicy,
+} from '../../api/sales'
 
 export interface ProductPrice {
   spotPricePerGram: number
@@ -68,31 +92,12 @@ export interface CartLine {
   availableQuantity: number
   quantity: number
   discount: number
-}
-
-export interface OrderResult {
-  _id: string
-  status: string
-  totalAmount: number
-  createdAt: string
-}
-
-export interface InvoiceResult {
-  _id: string
-  invoiceNumber: string
-  orderId: string
-  subtotal: number
-  discount: number
-  taxAmount: number
-  finalAmount: number
-  amountPaid: number
-  paymentMethod: PaymentMethod
-  paymentStatus: PaymentStatus
-}
-
-export interface CheckoutResult {
-  order: OrderResult
-  invoice: InvoiceResult
+  /**
+   * The only making-charge state the frontend owns. Everything else about a
+   * line's price (current value, selling price, tax) comes from the latest
+   * `/sales/calculate` response and is never duplicated here.
+   */
+  makingChargeOverride?: MakingChargeOverride
 }
 
 /** The wizard sequence. Numbering these in the UI is legitimate — it is a
