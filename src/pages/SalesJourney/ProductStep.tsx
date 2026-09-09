@@ -1,6 +1,7 @@
 import { type Dispatch, type FormEvent, useEffect, useState } from 'react'
 import { apiClient } from '../../api/client'
 import {
+  AlertIcon,
   Badge,
   BoxIcon,
   Button,
@@ -21,19 +22,13 @@ import {
   TrashIcon,
   useToast,
 } from '../../components'
+import type { MakingChargeType, SaleLine } from '../../api/sales'
 import { cx } from '../../utils/cx'
 import { extractErrorMessage, formatCurrency } from '../../utils/format'
 import { stockLevelLabel, stockLevelTone } from '../../utils/ui'
 import ActionBar from './ActionBar'
-import {
-  cartGross,
-  cartItemCount,
-  cartSubtotal,
-  cartTaxTotal,
-  lineTotal,
-  type Action,
-  type WizardState,
-} from './state'
+import { BILLING_TYPES, MAKING_CHARGE_TYPES, formatMakingCharge } from './pricing-format'
+import { cartItemCount, type Action, type WizardState } from './state'
 import TabToggle from './TabToggle'
 import type { CartLine, MetalType, Product, ProductType, Purity } from './types'
 
@@ -180,35 +175,68 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
     }
   }
 
-  const subtotal = cartSubtotal(state.cart)
-  const gross = cartGross(state.cart)
-  const taxTotal = cartTaxTotal(state.cart)
-  const lineDiscounts = gross - subtotal
   const itemCount = cartItemCount(state.cart)
   const isEmpty = state.cart.length === 0
+  const { calculation, isCalculating, calculationError } = state
+  const canAdjustMakingCharge = state.salesPolicy?.canAdjustMakingCharge ?? false
 
-  const totals = (
+  const totals = calculation ? (
     <FigureStack
       rows={[
         {
-          label: itemCount === 1 ? '1 item' : `${itemCount} items`,
-          value: gross,
-          hint: 'At the shop price on record',
+          label: itemCount === 1 ? '1 item · gold value' : `${itemCount} items · gold value`,
+          value: calculation.productValueTotal,
         },
-        ...(lineDiscounts > 0
-          ? [{ label: 'Line discounts', value: -lineDiscounts, tone: 'success' as const }]
+        { label: 'Making charges', value: calculation.makingChargeTotal },
+        ...(calculation.lineDiscountTotal > 0
+          ? [{ label: 'Line discounts', value: -calculation.lineDiscountTotal, tone: 'success' as const }]
           : []),
-        { label: 'Tax included in prices', value: taxTotal },
+        {
+          label: calculation.billingType === 'GST' ? 'GST' : 'Tax (Non-GST bill)',
+          value: calculation.taxAmount,
+        },
       ]}
-      total={{ label: 'Cart subtotal', value: subtotal }}
+      total={{ label: 'Cart total', value: calculation.grandTotal }}
     />
+  ) : calculationError ? (
+    <p role="alert" className="flex items-start gap-2 text-sm text-danger">
+      <AlertIcon size={16} className="mt-0.5 shrink-0" />
+      {calculationError}
+    </p>
+  ) : (
+    <div className="space-y-2" aria-live="polite" aria-busy="true">
+      <Skeleton className="h-3.5 w-full" />
+      <Skeleton className="h-3.5 w-2/3" />
+    </div>
   )
 
   const cartLines = (
     <div className="divide-y divide-line">
       {state.cart.map((line) => (
-        <CartLineRow key={line.productId} line={line} dispatch={dispatch} />
+        <CartLineRow
+          key={line.productId}
+          line={line}
+          dispatch={dispatch}
+          calcLine={calculation?.lines.find((l) => l.productId === line.productId)}
+          canAdjustMakingCharge={canAdjustMakingCharge}
+          isCalculating={isCalculating}
+        />
       ))}
+    </div>
+  )
+
+  // Same choice as the Billing step, surfaced here too so the salesperson can
+  // see GST-inclusive vs Non-GST pricing while still building the cart —
+  // switching here only recalculates tax, same as everywhere else this
+  // control appears; the cart itself is never affected.
+  const billingTypeToggle = (
+    <div className="border-b border-line p-3 sm:p-4">
+      <TabToggle
+        label="Billing type"
+        value={state.billingType}
+        onChange={(value) => dispatch({ type: 'SET_BILLING_TYPE', value })}
+        options={BILLING_TYPES}
+      />
     </div>
   )
 
@@ -289,6 +317,7 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
           />
         ) : (
           <>
+            {billingTypeToggle}
             {cartLines}
             <div className="border-t border-line p-3 sm:p-4">{totals}</div>
           </>
@@ -308,8 +337,8 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
                 {itemCount} item{itemCount === 1 ? '' : 's'} in cart
               </span>
               <span className="flex items-center gap-2">
-                <span className="font-mono text-sm font-semibold text-ink">
-                  {formatCurrency(subtotal)}
+                <span className="font-mono text-sm font-semibold text-ink" aria-live="polite">
+                  {calculation ? formatCurrency(calculation.grandTotal) : '…'}
                 </span>
                 <ChevronDownIcon size={16} className="rotate-180 text-ink-muted" />
               </span>
@@ -339,6 +368,7 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
           <p className="text-sm text-ink-muted">Nothing in the cart yet.</p>
         ) : (
           <div className="-mx-4">
+            {billingTypeToggle}
             {cartLines}
             <div className="border-t border-line px-4 pt-4">{totals}</div>
           </div>
@@ -508,8 +538,27 @@ function ProductResultRow({
   )
 }
 
-function CartLineRow({ line, dispatch }: { line: CartLine; dispatch: Dispatch<Action> }) {
-  const total = lineTotal(line)
+interface CartLineRowProps {
+  line: CartLine
+  dispatch: Dispatch<Action>
+  calcLine: SaleLine | undefined
+  canAdjustMakingCharge: boolean
+  isCalculating: boolean
+}
+
+function CartLineRow({ line, dispatch, calcLine, canAdjustMakingCharge, isCalculating }: CartLineRowProps) {
+  const activeType: MakingChargeType =
+    line.makingChargeOverride?.type ?? calcLine?.saleMakingChargeType ?? 'percentage'
+  const activeValue =
+    line.makingChargeOverride?.value ?? calcLine?.saleMakingChargeValue ?? calcLine?.defaultMakingChargeValue ?? 0
+
+  function setMakingCharge(patch: { type?: MakingChargeType; value?: number }) {
+    dispatch({
+      type: 'SET_LINE_MAKING_CHARGE',
+      productId: line.productId,
+      override: { type: patch.type ?? activeType, value: patch.value ?? activeValue },
+    })
+  }
 
   return (
     <div className="p-3 sm:px-4">
@@ -523,9 +572,6 @@ function CartLineRow({ line, dispatch }: { line: CartLine; dispatch: Dispatch<Ac
               label={`${sentence(line.metalType)} ${line.purity}`}
               className="text-xs text-ink-muted"
             />
-            <span className="font-mono">
-              {line.unitPrice != null ? `${formatCurrency(line.unitPrice)} each` : 'Price unavailable'}
-            </span>
           </p>
         </div>
         <IconButton
@@ -538,77 +584,179 @@ function CartLineRow({ line, dispatch }: { line: CartLine; dispatch: Dispatch<Ac
         </IconButton>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1">
-            <IconButton
-              label={`Decrease quantity of ${line.name}`}
-              variant="secondary"
-              disabled={line.quantity <= 1}
-              onClick={() =>
-                dispatch({
-                  type: 'UPDATE_CART_LINE',
-                  productId: line.productId,
-                  patch: { quantity: line.quantity - 1 },
-                })
-              }
-            >
-              <MinusIcon />
-            </IconButton>
-            <span
-              className="w-10 text-center font-mono text-sm text-ink"
-              aria-live="polite"
-              aria-label={`Quantity ${line.quantity}`}
-            >
-              {line.quantity}
-            </span>
-            <IconButton
-              label={`Increase quantity of ${line.name}`}
-              variant="secondary"
-              disabled={line.quantity >= line.availableQuantity}
-              onClick={() =>
-                dispatch({
-                  type: 'UPDATE_CART_LINE',
-                  productId: line.productId,
-                  patch: { quantity: line.quantity + 1 },
-                })
-              }
-            >
-              <PlusIcon size={16} />
-            </IconButton>
-          </div>
-          <span className="text-xs text-ink-muted">
-            of <span className="font-mono">{line.availableQuantity}</span> in stock
-          </span>
-        </div>
+      <div className="mt-3 flex items-center gap-2">
+        <IconButton
+          label={`Decrease quantity of ${line.name}`}
+          variant="secondary"
+          disabled={line.quantity <= 1}
+          onClick={() =>
+            dispatch({
+              type: 'UPDATE_CART_LINE',
+              productId: line.productId,
+              patch: { quantity: line.quantity - 1 },
+            })
+          }
+        >
+          <MinusIcon />
+        </IconButton>
+        <span
+          className="w-10 text-center font-mono text-sm text-ink"
+          aria-live="polite"
+          aria-label={`Quantity ${line.quantity}`}
+        >
+          {line.quantity}
+        </span>
+        <IconButton
+          label={`Increase quantity of ${line.name}`}
+          variant="secondary"
+          disabled={line.quantity >= line.availableQuantity}
+          onClick={() =>
+            dispatch({
+              type: 'UPDATE_CART_LINE',
+              productId: line.productId,
+              patch: { quantity: line.quantity + 1 },
+            })
+          }
+        >
+          <PlusIcon size={16} />
+        </IconButton>
+        <span className="ml-1 text-xs text-ink-muted">
+          of <span className="font-mono">{line.availableQuantity}</span> in stock
+        </span>
+      </div>
 
-        <div className="flex items-end gap-3">
-          <Field
-            label="Discount"
-            hideLabel
-            id={`discount-${line.productId}`}
-            className="w-28 shrink-0"
-          >
-            <Input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              value={line.discount || ''}
-              placeholder="Discount"
-              onChange={(event) =>
-                dispatch({
-                  type: 'UPDATE_CART_LINE',
-                  productId: line.productId,
-                  patch: { discount: Number(event.target.value) || 0 },
-                })
-              }
-              className="text-right font-mono"
+      <div className="mt-3 rounded-panel bg-sunken p-3" aria-live="polite">
+        {calcLine ? (
+          <>
+            <FigureStack
+              size="sm"
+              rows={[
+                { label: 'Current product value', value: calcLine.currentValue },
+                { label: 'Gold value', value: calcLine.productValue },
+              ]}
             />
-          </Field>
-          <span className="min-w-24 pb-2.5 text-right font-mono text-sm font-semibold text-ink">
-            {formatCurrency(total)}
-          </span>
-        </div>
+
+            <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-line pt-3">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-ink">Making charge</p>
+                <p className="mt-0.5 text-xs text-ink-muted">
+                  {calcLine.makingChargeAdjusted ? (
+                    <>
+                      Default: {formatMakingCharge(calcLine.defaultMakingChargeType, calcLine.defaultMakingChargeValue)}
+                      {' · Applied: '}
+                      {formatMakingCharge(calcLine.saleMakingChargeType, calcLine.saleMakingChargeValue)}
+                    </>
+                  ) : (
+                    <>Default: {formatMakingCharge(calcLine.defaultMakingChargeType, calcLine.defaultMakingChargeValue)}</>
+                  )}
+                </p>
+              </div>
+
+              {canAdjustMakingCharge ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <TabToggle
+                    label={`Making charge type for ${line.name}`}
+                    value={activeType}
+                    onChange={(value) => setMakingCharge({ type: value })}
+                    options={MAKING_CHARGE_TYPES}
+                  />
+                  <Field
+                    label={`Making charge value for ${line.name}`}
+                    hideLabel
+                    id={`making-charge-${line.productId}`}
+                    className="w-24 shrink-0"
+                  >
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={activeValue || ''}
+                      onChange={(event) => setMakingCharge({ value: Number(event.target.value) || 0 })}
+                      className="text-right font-mono"
+                    />
+                  </Field>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2" aria-disabled="true">
+                  <span className="inline-flex h-10 items-center rounded-control border border-line bg-surface px-3 text-sm text-ink-muted sm:h-9">
+                    {activeType === 'percentage' ? 'Percentage' : 'Per gram'}
+                  </span>
+                  <Field
+                    label={`Making charge value for ${line.name}`}
+                    hideLabel
+                    id={`making-charge-${line.productId}`}
+                    className="w-24 shrink-0"
+                  >
+                    <Input
+                      type="number"
+                      value={activeValue}
+                      disabled
+                      readOnly
+                      className="text-right font-mono"
+                    />
+                  </Field>
+                </div>
+              )}
+            </div>
+
+            {calcLine.makingChargeOverrideIgnored && (
+              <p className="mt-2 text-xs text-warning">
+                Making charge reverted to default — you don't have permission to adjust it.
+              </p>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-line pt-3">
+              <Field
+                label="Discount"
+                hideLabel
+                id={`discount-${line.productId}`}
+                className="w-28 shrink-0"
+              >
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  value={line.discount || ''}
+                  placeholder="Discount"
+                  onChange={(event) =>
+                    dispatch({
+                      type: 'UPDATE_CART_LINE',
+                      productId: line.productId,
+                      patch: { discount: Number(event.target.value) || 0 },
+                    })
+                  }
+                  className="text-right font-mono"
+                />
+              </Field>
+              <div className="text-right">
+                <p className="text-xs text-ink-muted">Selling price</p>
+                <p className="font-mono text-sm font-semibold text-ink">
+                  {formatCurrency(calcLine.sellingPrice)}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-2">
+              {calcLine.belowCurrentValue ? (
+                <Badge tone="warning" icon={<AlertIcon size={12} />}>
+                  {formatCurrency(Math.abs(calcLine.difference))} below current value
+                </Badge>
+              ) : (
+                <Badge tone="success">Above current value</Badge>
+              )}
+            </div>
+          </>
+        ) : isCalculating ? (
+          <div className="space-y-2" aria-busy="true">
+            <Skeleton className="h-3.5 w-full" />
+            <Skeleton className="h-3.5 w-2/3" />
+          </div>
+        ) : (
+          <p className="text-xs text-ink-muted">
+            {line.unitPrice != null ? `${formatCurrency(line.unitPrice)} each (last known price)` : 'Price unavailable'}
+          </p>
+        )}
       </div>
     </div>
   )

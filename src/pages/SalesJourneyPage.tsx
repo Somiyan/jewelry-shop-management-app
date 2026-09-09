@@ -8,9 +8,14 @@ import { initialState, reducer } from './SalesJourney/state'
 import StepIndicator from './SalesJourney/StepIndicator'
 import SuccessStep from './SalesJourney/SuccessStep'
 import type { StepIndex } from './SalesJourney/types'
+import { useSaleCalculation } from './SalesJourney/useSaleCalculation'
 
 export default function SalesJourneyPage() {
   const [state, dispatch] = useReducer(reducer, initialState)
+
+  // Fetches the sales policy once, then keeps `state.calculation` in sync
+  // with the cart/customer/billing type for every step in the wizard.
+  useSaleCalculation(state, dispatch)
 
   function goToStep(step: StepIndex) {
     dispatch({ type: 'SET_STEP', step })

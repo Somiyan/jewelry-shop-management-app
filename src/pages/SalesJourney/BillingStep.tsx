@@ -1,8 +1,10 @@
 import { type Dispatch, useEffect } from 'react'
-import { Card, Checkbox, Field, FigureStack, Input, Select, Textarea } from '../../components'
+import { AlertIcon, Card, Checkbox, Field, FigureStack, Input, Select, Skeleton, Textarea } from '../../components'
 import { formatCurrency } from '../../utils/format'
 import ActionBar from './ActionBar'
-import { cartSubtotal, type Action, type WizardState } from './state'
+import { BILLING_TYPES } from './pricing-format'
+import { amountPaidValue, isOverpaid, orderTotal, type Action, type WizardState } from './state'
+import TabToggle from './TabToggle'
 import type { CommPref, PaymentMethod } from './types'
 
 const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
@@ -28,12 +30,11 @@ interface Props {
 }
 
 export default function BillingStep({ state, dispatch, onContinue, onBack }: Props) {
-  const subtotal = cartSubtotal(state.cart)
-  const orderDiscount = Number(state.orderDiscount) || 0
-  const grandTotal = Math.max(subtotal - orderDiscount, 0)
-  const amountPaid = Number(state.amountPaid) || 0
+  const { calculation, isCalculating, calculationError } = state
+  const grandTotal = orderTotal(state)
+  const amountPaid = amountPaidValue(state)
   const balanceDue = grandTotal - amountPaid
-  const overpaid = amountPaid > grandTotal
+  const overpaid = isOverpaid(state)
 
   useEffect(() => {
     // Only re-sync automatically while the salesperson hasn't manually edited the field.
@@ -46,6 +47,18 @@ export default function BillingStep({ state, dispatch, onContinue, onBack }: Pro
 
   return (
     <div className="space-y-4">
+      <Card
+        title="Billing type"
+        description="Switching only changes the tax on this sale — the cart, customer and everything else stay as they are."
+      >
+        <TabToggle
+          label="Billing type"
+          value={state.billingType}
+          onChange={(value) => dispatch({ type: 'SET_BILLING_TYPE', value })}
+          options={BILLING_TYPES}
+        />
+      </Card>
+
       <Card title="Billing details">
         <div className="space-y-4">
           <div className="flex items-baseline justify-between gap-4 border-b border-line pb-3">
@@ -139,16 +152,37 @@ export default function BillingStep({ state, dispatch, onContinue, onBack }: Pro
           </Field>
         </div>
 
-        <div className="mt-4 rounded-panel bg-sunken p-3 sm:p-4">
-          <FigureStack
-            rows={[
-              { label: 'Cart subtotal', value: subtotal },
-              ...(orderDiscount > 0
-                ? [{ label: 'Order discount', value: -orderDiscount, tone: 'success' as const }]
-                : []),
-            ]}
-            total={{ label: 'Order total', value: grandTotal }}
-          />
+        <div className="mt-4 rounded-panel bg-sunken p-3 sm:p-4" aria-live="polite">
+          {calculation ? (
+            <FigureStack
+              rows={[
+                { label: 'Gold value', value: calculation.productValueTotal },
+                { label: 'Making charges', value: calculation.makingChargeTotal },
+                ...(calculation.lineDiscountTotal > 0
+                  ? [{ label: 'Line discounts', value: -calculation.lineDiscountTotal, tone: 'success' as const }]
+                  : []),
+                ...(calculation.orderDiscount > 0
+                  ? [{ label: 'Order discount', value: -calculation.orderDiscount, tone: 'success' as const }]
+                  : []),
+                calculation.billingType === 'GST'
+                  ? calculation.isInterState
+                    ? { label: 'IGST', value: calculation.igstAmount }
+                    : { label: 'CGST + SGST', value: calculation.cgstAmount + calculation.sgstAmount }
+                  : { label: 'GST', value: 'Not applicable' },
+              ]}
+              total={{ label: 'Order total', value: calculation.grandTotal }}
+            />
+          ) : calculationError ? (
+            <p role="alert" className="flex items-start gap-2 text-sm text-danger">
+              <AlertIcon size={16} className="mt-0.5 shrink-0" />
+              {calculationError}
+            </p>
+          ) : (
+            <div className="space-y-2" aria-busy={isCalculating}>
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-2/3" />
+            </div>
+          )}
           <div className="mt-3 border-t border-line pt-3">
             <FigureStack
               size="sm"

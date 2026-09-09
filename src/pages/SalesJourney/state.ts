@@ -1,10 +1,15 @@
 import type {
+  BelowValueApproval,
+  BillingType,
   CartLine,
   CheckoutResult,
   CommPref,
   Customer,
+  MakingChargeOverride,
   PaymentMethod,
   Product,
+  SaleCalculation,
+  SalesPolicy,
   StepIndex,
 } from './types'
 
@@ -23,6 +28,22 @@ export interface WizardState {
   checkoutError: string | null
   isSubmitting: boolean
   result: CheckoutResult | null
+
+  /** GST or Non-GST for this sale. Any authenticated user may switch it. */
+  billingType: BillingType
+  /** What this user is allowed to do, fetched once when the wizard starts. */
+  salesPolicy: SalesPolicy | null
+  /**
+   * The latest `/sales/calculate` response. This is the single source of
+   * truth for every price shown from the Products step onward — never the
+   * client-derived cart totals below, which only exist as a rough estimate
+   * before the first calculation resolves.
+   */
+  calculation: SaleCalculation | null
+  isCalculating: boolean
+  calculationError: string | null
+  /** One blanket approval covering every below-value line in this sale. */
+  belowValueApproval: BelowValueApproval | null
 }
 
 export const initialState: WizardState = {
@@ -40,6 +61,13 @@ export const initialState: WizardState = {
   checkoutError: null,
   isSubmitting: false,
   result: null,
+
+  billingType: 'GST',
+  salesPolicy: null,
+  calculation: null,
+  isCalculating: false,
+  calculationError: null,
+  belowValueApproval: null,
 }
 
 export type Action =
@@ -58,7 +86,17 @@ export type Action =
   | { type: 'SET_NOTES'; value: string }
   | { type: 'CHECKOUT_START' }
   | { type: 'CHECKOUT_ERROR'; message: string }
+  /** A 409/403 arrived mid-checkout: stop the spinner without alarming the user — the approval modal takes over. */
+  | { type: 'CHECKOUT_NEEDS_APPROVAL' }
   | { type: 'CHECKOUT_SUCCESS'; result: CheckoutResult }
+  | { type: 'SET_BILLING_TYPE'; value: BillingType }
+  | { type: 'SET_LINE_MAKING_CHARGE'; productId: string; override: MakingChargeOverride | undefined }
+  | { type: 'SET_SALES_POLICY'; policy: SalesPolicy }
+  | { type: 'CALCULATE_START' }
+  | { type: 'CALCULATE_SUCCESS'; calculation: SaleCalculation }
+  | { type: 'CALCULATE_ERROR'; message: string }
+  | { type: 'CALCULATE_CLEAR' }
+  | { type: 'SET_BELOW_VALUE_APPROVAL'; approval: BelowValueApproval | null }
   | { type: 'RESET' }
 
 export function reducer(state: WizardState, action: Action): WizardState {
@@ -167,6 +205,9 @@ export function reducer(state: WizardState, action: Action): WizardState {
     case 'CHECKOUT_ERROR':
       return { ...state, isSubmitting: false, checkoutError: action.message }
 
+    case 'CHECKOUT_NEEDS_APPROVAL':
+      return { ...state, isSubmitting: false, checkoutError: null }
+
     case 'CHECKOUT_SUCCESS':
       return {
         ...state,
@@ -177,46 +218,82 @@ export function reducer(state: WizardState, action: Action): WizardState {
         maxStepReached: 4,
       }
 
+    case 'SET_BILLING_TYPE':
+      // Switching GST <-> Non-GST recalculates tax only — cart, customer and
+      // every other choice made so far are untouched.
+      return { ...state, billingType: action.value }
+
+    case 'SET_LINE_MAKING_CHARGE':
+      return {
+        ...state,
+        cart: state.cart.map((line) =>
+          line.productId === action.productId ? { ...line, makingChargeOverride: action.override } : line,
+        ),
+      }
+
+    case 'SET_SALES_POLICY':
+      return {
+        ...state,
+        salesPolicy: action.policy,
+        // Only adopt the server default the first time the policy loads —
+        // a salesperson's manual GST/Non-GST choice is never overwritten.
+        billingType: state.salesPolicy ? state.billingType : action.policy.defaultBillingType,
+      }
+
+    case 'CALCULATE_START':
+      return { ...state, isCalculating: true, calculationError: null }
+
+    case 'CALCULATE_SUCCESS':
+      return {
+        ...state,
+        isCalculating: false,
+        calculationError: null,
+        calculation: action.calculation,
+        // A below-value approval is tied to the priced lines it covered —
+        // any new calculation (cart, making charge or billing type changed)
+        // means the approval must be re-confirmed against the new numbers.
+        belowValueApproval: null,
+      }
+
+    case 'CALCULATE_ERROR':
+      return { ...state, isCalculating: false, calculationError: action.message, calculation: null }
+
+    case 'CALCULATE_CLEAR':
+      return { ...state, isCalculating: false, calculationError: null, calculation: null }
+
+    case 'SET_BELOW_VALUE_APPROVAL':
+      return { ...state, belowValueApproval: action.approval }
+
     case 'RESET':
-      return initialState
+      // A fresh sale keeps the policy already fetched (no need to re-fetch)
+      // and re-applies its default billing type.
+      return {
+        ...initialState,
+        salesPolicy: state.salesPolicy,
+        billingType: state.salesPolicy?.defaultBillingType ?? initialState.billingType,
+      }
 
     default:
       return state
   }
 }
 
+/* ------------------------------------------------------- rough estimates ---
+ * Pure scaling of prices already frozen on each CartLine at add-to-cart time.
+ * These exist ONLY to render something before the first `/sales/calculate`
+ * response lands (e.g. the phone cart-summary strip while the debounce timer
+ * is still pending) — they must never be shown alongside, or instead of, the
+ * calculation-driven totals once a `calculation` exists. See ReviewStep and
+ * BillingStep, which read `state.calculation` exclusively.
+ * --------------------------------------------------------------------------*/
+
 export function lineTotal(line: CartLine): number {
   if (line.unitPrice == null) return 0
   return Math.max(line.unitPrice * line.quantity - line.discount, 0)
 }
 
-export function lineTaxTotal(line: CartLine): number {
-  return line.unitTax * line.quantity
-}
-
 export function cartSubtotal(cart: CartLine[]): number {
   return cart.reduce((sum, line) => sum + lineTotal(line), 0)
-}
-
-export function grandTotal(cart: CartLine[], orderDiscount: number): number {
-  return Math.max(cartSubtotal(cart) - orderDiscount, 0)
-}
-
-/**
- * Gross value of a line before any discount — pure scaling of the server's
- * `finalPrice`, never a re-derivation of pricing.
- */
-export function lineGross(line: CartLine): number {
-  if (line.unitPrice == null) return 0
-  return line.unitPrice * line.quantity
-}
-
-export function cartGross(cart: CartLine[]): number {
-  return cart.reduce((sum, line) => sum + lineGross(line), 0)
-}
-
-export function cartTaxTotal(cart: CartLine[]): number {
-  return cart.reduce((sum, line) => sum + lineTaxTotal(line), 0)
 }
 
 export function cartItemCount(cart: CartLine[]): number {
@@ -232,8 +309,14 @@ export function amountPaidValue(state: WizardState): number {
   return Number(state.amountPaid) || 0
 }
 
+/**
+ * The order total to bill against: the backend's own `grandTotal` once a
+ * calculation exists, falling back to the rough client estimate only before
+ * the first response lands.
+ */
 export function orderTotal(state: WizardState): number {
-  return grandTotal(state.cart, orderDiscountValue(state))
+  if (state.calculation) return state.calculation.grandTotal
+  return Math.max(cartSubtotal(state.cart) - orderDiscountValue(state), 0)
 }
 
 /** Paying more than the bill is rejected before checkout, as it always was. */
