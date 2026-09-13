@@ -156,7 +156,7 @@ export default function BillingStep({ state, dispatch, onContinue, onBack }: Pro
           {calculation ? (
             <FigureStack
               rows={[
-                { label: 'Gold value', value: calculation.productValueTotal },
+                { label: 'Current cost', value: calculation.currentCostTotal },
                 { label: 'Making charges', value: calculation.makingChargeTotal },
                 ...(calculation.lineDiscountTotal > 0
                   ? [{ label: 'Line discounts', value: -calculation.lineDiscountTotal, tone: 'success' as const }]

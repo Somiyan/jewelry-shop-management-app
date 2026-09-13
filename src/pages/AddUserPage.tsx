@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
 import { apiClient } from '../api/client'
 import { useAuth } from '../auth'
 import type { Role } from '../auth'
@@ -197,6 +197,7 @@ function StaffForm({
 
 export default function AddUserPage() {
   const { isAuthenticated } = useAuth()
+  const location = useLocation()
   const toast = useToast()
 
   const [staff, setStaff] = useState<StaffMember[]>([])
@@ -256,6 +257,14 @@ export default function AddUserPage() {
         </div>
       </div>
     )
+  }
+
+  /* --- Already signed in but landed on the bootstrap URL (e.g. an old
+     bookmark or the "Settings" link from before it moved): the staff page
+     below needs AppLayout's sidebar/header, which only the /settings route
+     provides, so hand off there instead of rendering chrome-less. --- */
+  if (location.pathname === '/users/add') {
+    return <Navigate to="/settings" replace />
   }
 
   /* --- Signed in: the full staff management page inside the app shell. --- */

@@ -47,7 +47,7 @@ export function UserMenu() {
             icon={<SettingsIcon size={16} />}
             onClick={() => {
               close()
-              navigate('/users/add')
+              navigate('/settings')
             }}
           >
             Settings

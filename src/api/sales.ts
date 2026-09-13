@@ -62,10 +62,10 @@ export interface SaleLine {
   hsnCode: string
   /** Live rate used for this line. */
   goldRate: number
-  /** Priced at the product's own default making charge, always — the "current product value". */
-  currentValue: number
-  /** Pure metal value for this line, at the sale's making-charge mode/purity — the "Gold value" row. */
-  productValue: number
+  /** Wastage-inclusive cost — identical to what Product Detail shows for this product. The reference figure for this line. */
+  currentCost: number
+  /** currentCost + makingChargeAmount, before this line's own discount. */
+  calculatedSellingPrice: number
   /** Product Master's configured default — always shown for reference. */
   defaultMakingChargeType: MakingChargeType
   defaultMakingChargeValue: number
@@ -76,25 +76,25 @@ export interface SaleLine {
   makingChargeAmount: number
   /** This line's own discount. */
   discount: number
-  /** Pre-tax, post making-charge, post line-discount. */
+  /** Pre-tax, post making-charge, post line-discount. calculatedSellingPrice - discount. */
   sellingPrice: number
   /** This line's share of GST (0 for Non-GST). */
   tax: number
   /** sellingPrice + tax — what this line actually costs the customer. */
   finalPrice: number
-  /** sellingPrice - currentValue. Negative = below value. */
+  /** sellingPrice - currentCost. Negative = below cost. */
   difference: number
   marginPercent: number
-  belowCurrentValue: boolean
+  belowCurrentCost: boolean
   /** True if an override was sent but the user isn't permitted — backend fell back to default. */
   makingChargeOverrideIgnored: boolean
 }
 
 export interface BelowValueWarning {
-  warning: 'SELLING_BELOW_CURRENT_VALUE'
+  warning: 'SELLING_BELOW_CURRENT_COST'
   productId: string
   productName: string
-  currentValue: number
+  currentCost: number
   sellingValue: number
   difference: number
   requiresApproval: boolean
@@ -107,7 +107,8 @@ export interface SaleCalculation {
   shopGstin: string
   shopState: string
   lines: SaleLine[]
-  productValueTotal: number
+  /** Sum of every line's currentCost — the "Current cost" figure in the cart summary. */
+  currentCostTotal: number
   makingChargeTotal: number
   lineDiscountTotal: number
   /** Sum of sellingPrice across lines, pre order-discount. */
