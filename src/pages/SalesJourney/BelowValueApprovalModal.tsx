@@ -14,11 +14,11 @@ interface Props {
 }
 
 /**
- * The below-current-value confirmation gate. Shown proactively before
+ * The below-current-cost confirmation gate. Shown proactively before
  * checkout is even called (see `ReviewStep`), and reused if the server still
  * rejects with a 409/403 — e.g. a rate changed between preview and submit.
  *
- * Every flagged line is listed with its own current value, selling price and
+ * Every flagged line is listed with its own current cost, selling price and
  * difference (per item 13 of the brief) — never a single rolled-up total.
  */
 export default function BelowValueApprovalModal({
@@ -61,11 +61,11 @@ export default function BelowValueApprovalModal({
     <Modal
       open={open}
       onClose={handleClose}
-      title="Selling below current value"
+      title="Selling below current cost"
       description={
         warnings.length === 1
-          ? '1 item in this sale is priced below its current value.'
-          : `${warnings.length} items in this sale are priced below their current value.`
+          ? '1 item in this sale is priced below its current cost.'
+          : `${warnings.length} items in this sale are priced below their current cost.`
       }
       size="md"
       footer={
@@ -94,7 +94,7 @@ export default function BelowValueApprovalModal({
                 <FigureStack
                   size="sm"
                   rows={[
-                    { label: 'Current value', value: warning.currentValue },
+                    { label: 'Current cost', value: warning.currentCost },
                     { label: 'Selling price', value: warning.sellingValue },
                     { label: 'Difference', value: warning.difference, tone: 'danger' },
                   ]}
@@ -130,7 +130,7 @@ export default function BelowValueApprovalModal({
               invalid={Boolean(reasonError)}
               placeholder={
                 reasonRequired
-                  ? 'Why is this sale priced below current value?'
+                  ? 'Why is this sale priced below current cost?'
                   : 'Optional — kept on the sale record.'
               }
             />

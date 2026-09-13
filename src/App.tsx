@@ -30,6 +30,11 @@ function App() {
     <Routes>
       <Route path="/" element={<Navigate to={isAuthenticated ? '/dashboard' : '/login'} replace />} />
       <Route path="/login" element={<LoginPage />} />
+
+      {/* Deliberately outside AppLayout and reachable with no session — this is
+          how the very first admin account gets created, before anyone can log
+          in. AddUserPage itself redirects here to /settings once authenticated,
+          so this URL never renders the staff page chrome-less. */}
       <Route path="/users/add" element={<AddUserPage />} />
 
       {/* Standalone print view — deliberately outside AppLayout so no sidebar/header chrome prints. */}
@@ -63,6 +68,7 @@ function App() {
         <Route path="/categories" element={<CategoryMasterPage />} />
         <Route path="/metal-rates" element={<PreciousMetalRatesPage />} />
         <Route path="/metal-rates/history" element={<RateHistoryPage />} />
+        <Route path="/settings" element={<AddUserPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

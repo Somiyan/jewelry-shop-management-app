@@ -181,10 +181,10 @@ export default function ReviewStep({
       render: (line) => <span className="font-mono">{formatCurrency(line.goldRate)}/g</span>,
     },
     {
-      key: 'currentValue',
-      header: 'Current value',
+      key: 'currentCost',
+      header: 'Current cost',
       align: 'right',
-      render: (line) => <span className="font-mono">{formatCurrency(line.currentValue)}</span>,
+      render: (line) => <span className="font-mono">{formatCurrency(line.currentCost)}</span>,
     },
     {
       key: 'makingCharge',
@@ -210,9 +210,9 @@ export default function ReviewStep({
       render: (line) => (
         <span className="block">
           <span className="font-mono font-semibold">{formatCurrency(line.sellingPrice)}</span>
-          {line.belowCurrentValue && (
+          {line.belowCurrentCost && (
             <span className="mt-0.5 block text-xs text-warning">
-              {formatCurrency(Math.abs(line.difference))} below value
+              {formatCurrency(Math.abs(line.difference))} below cost
             </span>
           )}
         </span>
@@ -285,12 +285,12 @@ export default function ReviewStep({
                     </span>
                   </div>
                   <p className="mt-2 font-mono text-xs text-ink-muted">
-                    Current value {formatCurrency(line.currentValue)} · making{' '}
+                    Current cost {formatCurrency(line.currentCost)} · making{' '}
                     {formatMakingCharge(line.saleMakingChargeType, line.saleMakingChargeValue)}
                   </p>
-                  {line.belowCurrentValue && (
+                  {line.belowCurrentCost && (
                     <p className="mt-1 text-xs text-warning">
-                      {formatCurrency(Math.abs(line.difference))} below current value
+                      {formatCurrency(Math.abs(line.difference))} below current cost
                     </p>
                   )}
                 </div>
@@ -300,7 +300,7 @@ export default function ReviewStep({
             <Card className="mt-3">
               <FigureStack
                 rows={[
-                  { label: 'Product value', value: calculation.productValueTotal },
+                  { label: 'Current cost', value: calculation.currentCostTotal },
                   { label: 'Making charges', value: calculation.makingChargeTotal },
                   ...(calculation.lineDiscountTotal > 0
                     ? [{ label: 'Line discounts', value: -calculation.lineDiscountTotal, tone: 'success' as const }]
@@ -323,13 +323,13 @@ export default function ReviewStep({
                 <p className="flex items-start gap-2 font-medium">
                   <AlertIcon size={16} className="mt-0.5 shrink-0" />
                   {calculation.warnings.length === 1
-                    ? '1 item is priced below its current value.'
-                    : `${calculation.warnings.length} items are priced below their current value.`}
+                    ? '1 item is priced below its current cost.'
+                    : `${calculation.warnings.length} items are priced below their current cost.`}
                 </p>
                 <ul className="mt-2 space-y-1 pl-6 text-xs">
                   {calculation.warnings.map((warning) => (
                     <li key={warning.productId} className="list-disc">
-                      {warning.productName} — {formatCurrency(Math.abs(warning.difference))} below value
+                      {warning.productName} — {formatCurrency(Math.abs(warning.difference))} below cost
                     </li>
                   ))}
                 </ul>

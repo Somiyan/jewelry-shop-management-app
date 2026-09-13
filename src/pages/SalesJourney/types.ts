@@ -1,7 +1,6 @@
 import type { MakingChargeOverride } from '../../api/sales'
 
 export type MetalType = 'gold' | 'silver'
-export type Purity = '24K' | '22K' | '18K' | '925'
 export type ProductType = 'ring' | 'necklace' | 'bracelet' | 'earring' | 'pendant'
 export type StockLevel = 'red' | 'yellow' | 'green'
 export type PaymentMethod = 'cash' | 'card' | 'upi' | 'cheque' | 'bank-transfer' | 'other'
@@ -46,7 +45,8 @@ export interface Product {
   name: string
   type: ProductType
   metalType: MetalType
-  purity: Purity
+  /** Purity PERCENTAGE (e.g. 91.6 for 22K gold) — never a karat label. Matches the Product module's own schema exactly. */
+  purity: number
   weightGrams: number
   sku: string
   quantity: number
@@ -86,6 +86,7 @@ export interface CartLine {
   sku: string
   metalType: string
   purity: string
+  weightGrams: number
   category?: string
   unitPrice: number | null
   unitTax: number
@@ -94,7 +95,7 @@ export interface CartLine {
   discount: number
   /**
    * The only making-charge state the frontend owns. Everything else about a
-   * line's price (current value, selling price, tax) comes from the latest
+   * line's price (current cost, selling price, tax) comes from the latest
    * `/sales/calculate` response and is never duplicated here.
    */
   makingChargeOverride?: MakingChargeOverride

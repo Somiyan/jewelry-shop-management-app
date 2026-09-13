@@ -23,6 +23,7 @@ import {
   useToast,
 } from '../../components'
 import type { MakingChargeType, SaleLine } from '../../api/sales'
+import { PURITY_PRESETS } from '../productShared'
 import { cx } from '../../utils/cx'
 import { extractErrorMessage, formatCurrency } from '../../utils/format'
 import { stockLevelLabel, stockLevelTone } from '../../utils/ui'
@@ -30,24 +31,31 @@ import ActionBar from './ActionBar'
 import { BILLING_TYPES, MAKING_CHARGE_TYPES, formatMakingCharge } from './pricing-format'
 import { cartItemCount, type Action, type WizardState } from './state'
 import TabToggle from './TabToggle'
-import type { CartLine, MetalType, Product, ProductType, Purity } from './types'
+import type { CartLine, MetalType, Product, ProductType } from './types'
 
 const PRODUCT_TYPES: ProductType[] = ['ring', 'necklace', 'bracelet', 'earring', 'pendant']
 const METAL_TYPES: MetalType[] = ['gold', 'silver']
-const PURITIES: Purity[] = ['24K', '22K', '18K', '925']
 
 const NEW_PRODUCT_FORM_ID = 'new-product-form'
+
+const PURITY_SELECT_OPTIONS = [...PURITY_PRESETS, { value: 'custom', label: 'Custom' }]
 
 interface NewProductForm {
   name: string
   type: ProductType
   metalType: MetalType
-  purity: Purity
+  purityPreset: string
+  purityCustom: string
+  /** Quick-add treats gross and net weight as the same figure — no separate stone weight tracked here. Matches the Product module's own required fields, just without the two-field split. */
   weightGrams: string
+  wastagePercentage: string
+  makingChargeType: MakingChargeType
+  makingChargeValue: string
   sku: string
   quantity: string
   barcode: string
   category: string
+  hsnCode: string
   image: string
   description: string
 }
@@ -56,12 +64,17 @@ const emptyNewProduct: NewProductForm = {
   name: '',
   type: 'ring',
   metalType: 'gold',
-  purity: '22K',
+  purityPreset: '91.6',
+  purityCustom: '',
   weightGrams: '',
+  wastagePercentage: '0',
+  makingChargeType: 'percentage',
+  makingChargeValue: '0',
   sku: '',
   quantity: '',
   barcode: '',
   category: '',
+  hsnCode: '',
   image: '',
   description: '',
 }
@@ -114,7 +127,7 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
     setIsSearching(true)
     const handle = setTimeout(() => {
       apiClient
-        .get<Product[]>('/products', { params: q.trim() ? { q: q.trim() } : {} })
+        .get<Product[]>('/products', { params: { inStock: 'true', ...(q.trim() ? { q: q.trim() } : {}) } })
         .then(({ data }) => {
           if (cancelled) return
           setResults(data)
@@ -146,18 +159,39 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
   async function handleCreateProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setFormError(null)
+
+    const purity = form.purityPreset === 'custom' ? Number(form.purityCustom) : Number(form.purityPreset)
+    if (!purity || purity <= 0 || purity > 100) {
+      setFormError('Enter a purity percentage between 0 and 100.')
+      return
+    }
+    const weight = Number(form.weightGrams)
+    if (!weight || weight <= 0) {
+      setFormError('Enter a weight greater than 0.')
+      return
+    }
+
     setIsSubmittingForm(true)
     try {
       const body = {
         name: form.name,
         type: form.type,
         metalType: form.metalType,
-        purity: form.purity,
-        weightGrams: Number(form.weightGrams),
+        purity,
+        // Quick add: gross and net weight are the same figure here — no
+        // separate stone weight tracked. Matches the Product module's own
+        // required fields (see ProductFormPage), just without the two-field
+        // split; edit the product later in Stock if that distinction matters.
+        grossWeight: weight,
+        netWeight: weight,
+        wastagePercentage: Number(form.wastagePercentage) || 0,
+        makingChargeType: form.makingChargeType,
+        makingChargeValue: Number(form.makingChargeValue) || 0,
         sku: form.sku,
         quantity: Number(form.quantity),
         barcode: form.barcode || undefined,
         category: form.category || undefined,
+        hsnCode: form.hsnCode || undefined,
         image: form.image || undefined,
         description: form.description || undefined,
       }
@@ -184,8 +218,8 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
     <FigureStack
       rows={[
         {
-          label: itemCount === 1 ? '1 item · gold value' : `${itemCount} items · gold value`,
-          value: calculation.productValueTotal,
+          label: itemCount === 1 ? '1 item · current cost' : `${itemCount} items · current cost`,
+          value: calculation.currentCostTotal,
         },
         { label: 'Making charges', value: calculation.makingChargeTotal },
         ...(calculation.lineDiscountTotal > 0
@@ -273,11 +307,13 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
 
         <div className="max-h-[26rem] overflow-y-auto">
           {isSearching && results.length === 0 ? (
-            <ul className="divide-y divide-line">
-              {[0, 1, 2, 3].map((row) => (
-                <li key={row} className="flex items-center justify-between gap-4 px-3 py-3.5 sm:px-4">
-                  <Skeleton className="h-3 w-2/5" />
-                  <Skeleton className="h-3 w-20" />
+            <ul className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-4">
+              {[0, 1, 2, 3, 4, 5].map((row) => (
+                <li key={row} className="rounded-panel border border-line bg-surface p-3">
+                  <Skeleton className="h-3.5 w-3/5" />
+                  <Skeleton className="mt-2 h-2.5 w-1/3" />
+                  <Skeleton className="mt-3 h-2.5 w-2/5" />
+                  <Skeleton className="mt-4 h-4 w-1/2" />
                 </li>
               ))}
             </ul>
@@ -293,10 +329,10 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
               }
             />
           ) : (
-            <ul className="divide-y divide-line">
+            <ul className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-4">
               {results.map((product) => (
-                <li key={product._id}>
-                  <ProductResultRow product={product} onSelect={handleSelectProduct} />
+                <li key={product._id} className="h-full">
+                  <ProductResultCard product={product} onSelect={handleSelectProduct} />
                 </li>
               ))}
             </ul>
@@ -420,12 +456,26 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
           </Field>
           <Field label="Purity" required>
             <Select
-              value={form.purity}
-              onChange={(event) => updateField('purity', event.target.value as Purity)}
-              options={PURITIES.map((purity) => ({ value: purity, label: purity }))}
+              value={form.purityPreset}
+              onChange={(event) => updateField('purityPreset', event.target.value)}
+              options={PURITY_SELECT_OPTIONS}
             />
           </Field>
-          <Field label="Weight" required hint="In grams, to two decimals.">
+          {form.purityPreset === 'custom' && (
+            <Field label="Custom purity" required hint="Percentage, e.g. 91.6.">
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                max="100"
+                value={form.purityCustom}
+                onChange={(event) => updateField('purityCustom', event.target.value)}
+                className="font-mono"
+              />
+            </Field>
+          )}
+          <Field label="Weight" required hint="In grams — used as both gross and net weight for a quick add.">
             <Input
               type="number"
               inputMode="decimal"
@@ -446,6 +496,36 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
               className="font-mono"
             />
           </Field>
+          <Field label="Wastage" hint="Percentage. Affects cost, not selling price.">
+            <Input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              value={form.wastagePercentage}
+              onChange={(event) => updateField('wastagePercentage', event.target.value)}
+              className="font-mono"
+            />
+          </Field>
+          <Field label="Making charge">
+            <div className="flex items-center gap-2">
+              <TabToggle
+                label="Making charge type"
+                value={form.makingChargeType}
+                onChange={(value) => updateField('makingChargeType', value)}
+                options={MAKING_CHARGE_TYPES}
+              />
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                value={form.makingChargeValue}
+                onChange={(event) => updateField('makingChargeValue', event.target.value)}
+                className="w-24 shrink-0 font-mono"
+              />
+            </div>
+          </Field>
           <Field label="Barcode" hint="Optional.">
             <Input
               value={form.barcode}
@@ -456,6 +536,12 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
             <Input
               value={form.category}
               onChange={(event) => updateField('category', event.target.value)}
+            />
+          </Field>
+          <Field label="HSN code" hint="Optional. Printed on the invoice line.">
+            <Input
+              value={form.hsnCode}
+              onChange={(event) => updateField('hsnCode', event.target.value)}
             />
           </Field>
           <Field label="Image URL" hint="Optional." className="sm:col-span-2">
@@ -487,7 +573,19 @@ export default function ProductStep({ state, dispatch, onContinue }: Props) {
   )
 }
 
-function ProductResultRow({
+/**
+ * A search result, presented as a self-contained ledger entry rather than a
+ * product photo tile — the real catalogue has almost no photos, so identity
+ * here comes from typography plus the metal dot, not an image slot. Price is
+ * the largest figure on the card (it's what the salesperson and customer
+ * actually care about); a hairline rule separates "what it is" from "what it
+ * costs", echoing the assay-stack rule-above-total without duplicating it.
+ *
+ * Out of stock gets a full status-tinted card, not just a corner badge — a
+ * dimmed row (or a small chip alone) is too easy to miss while tapping
+ * through a grid quickly during a live sale.
+ */
+function ProductResultCard({
   product,
   onSelect,
 }: {
@@ -503,33 +601,52 @@ function ProductResultRow({
       onClick={() => onSelect(product)}
       aria-label={`Add ${product.name} to the cart`}
       className={cx(
-        'flex w-full items-start justify-between gap-3 px-3 py-3 text-left transition-colors duration-150 sm:px-4',
-        outOfStock ? 'cursor-not-allowed opacity-60' : 'hover:bg-sunken',
+        'flex h-full w-full flex-col rounded-panel border p-3 text-left transition-colors duration-150',
+        outOfStock
+          ? 'cursor-not-allowed border-danger/40 bg-danger-soft'
+          : 'border-line bg-surface hover:border-accent/40 hover:bg-sunken',
       )}
     >
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-ink">{product.name}</span>
-        <span className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-ink-muted">
-          <span className="font-mono">{product.sku}</span>
-          <MetalSwatch
-            metal={product.metalType}
-            label={`${sentence(product.metalType)} ${product.purity}`}
-            className="text-xs text-ink-muted"
-          />
-          <span className="font-mono">{product.weightGrams} g</span>
-          {product.category && <span className="truncate">{product.category}</span>}
+      <span className="flex items-start justify-between gap-2">
+        <span
+          className={cx(
+            'min-w-0 flex-1 truncate text-sm font-medium',
+            outOfStock ? 'text-ink-muted' : 'text-ink',
+          )}
+        >
+          {product.name}
         </span>
-      </span>
-      <span className="flex shrink-0 flex-col items-end gap-1.5">
-        <span className="font-mono text-sm font-medium text-ink">
-          {product.price ? formatCurrency(product.price.finalPrice) : '—'}
-        </span>
-        <Badge tone={stockLevelTone(product.level)} dot>
+        <Badge tone={stockLevelTone(product.level)} dot className="shrink-0">
           {stockLevelLabel(product.level)}
           {!outOfStock && <span className="font-mono"> · {product.quantity}</span>}
         </Badge>
-        {!product.price && (
-          <span className="text-xs text-warning">
+      </span>
+
+      <span className="mt-1 block truncate font-mono text-xs text-ink-muted">{product.sku}</span>
+
+      <span className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-ink-muted">
+        <MetalSwatch
+          metal={product.metalType}
+          label={`${sentence(product.metalType)} ${product.purity}`}
+          className="text-xs text-ink-muted"
+        />
+        <span className="font-mono">{product.weightGrams} g</span>
+        {product.category && <span className="truncate">{product.category}</span>}
+      </span>
+
+      <span className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-2.5">
+        {product.price ? (
+          <span
+            className={cx(
+              'font-mono text-base font-semibold tabular-nums',
+              outOfStock ? 'text-ink-muted' : 'text-ink',
+            )}
+          >
+            {formatCurrency(product.price.finalPrice)}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-xs text-warning">
+            <AlertIcon size={12} className="shrink-0" />
             {product.priceError ?? 'Price unavailable'}
           </span>
         )}
@@ -572,6 +689,7 @@ function CartLineRow({ line, dispatch, calcLine, canAdjustMakingCharge, isCalcul
               label={`${sentence(line.metalType)} ${line.purity}`}
               className="text-xs text-ink-muted"
             />
+            <span className="font-mono">{line.weightGrams}g</span>
           </p>
         </div>
         <IconButton
@@ -631,9 +749,10 @@ function CartLineRow({ line, dispatch, calcLine, canAdjustMakingCharge, isCalcul
             <FigureStack
               size="sm"
               rows={[
-                { label: 'Current product value', value: calcLine.currentValue },
-                { label: 'Gold value', value: calcLine.productValue },
+                { label: 'Current cost', value: calcLine.currentCost },
+                { label: 'Making charge', value: calcLine.makingChargeAmount },
               ]}
+              total={{ label: 'Calculated selling price', value: calcLine.calculatedSellingPrice }}
             />
 
             <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-line pt-3">
@@ -730,7 +849,7 @@ function CartLineRow({ line, dispatch, calcLine, canAdjustMakingCharge, isCalcul
                 />
               </Field>
               <div className="text-right">
-                <p className="text-xs text-ink-muted">Selling price</p>
+                <p className="text-xs text-ink-muted">Final selling price</p>
                 <p className="font-mono text-sm font-semibold text-ink">
                   {formatCurrency(calcLine.sellingPrice)}
                 </p>
@@ -738,12 +857,12 @@ function CartLineRow({ line, dispatch, calcLine, canAdjustMakingCharge, isCalcul
             </div>
 
             <div className="mt-2">
-              {calcLine.belowCurrentValue ? (
+              {calcLine.belowCurrentCost ? (
                 <Badge tone="warning" icon={<AlertIcon size={12} />}>
-                  {formatCurrency(Math.abs(calcLine.difference))} below current value
+                  {formatCurrency(Math.abs(calcLine.difference))} below current cost
                 </Badge>
               ) : (
-                <Badge tone="success">Above current value</Badge>
+                <Badge tone="success">Above current cost</Badge>
               )}
             </div>
           </>

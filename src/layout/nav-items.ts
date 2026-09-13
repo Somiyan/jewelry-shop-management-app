@@ -34,7 +34,7 @@ export const navItems: NavItem[] = [
   // Every signed-in role may read rates and their history; the fetch and edit
   // actions inside the page are what's gated to admin/manager.
   { to: '/metal-rates', label: 'Metal rates', icon: TrendUpIcon },
-  { to: '/users/add', label: 'Settings', icon: SettingsIcon },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
 /** `navItems` filtered to what the signed-in user's role may see. */
